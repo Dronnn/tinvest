@@ -38,6 +38,7 @@ type fakeOrders struct {
 	postResp        *investapi.PostOrderResponse
 	postErr         error
 	block           chan struct{} // when non-nil, PostOrder blocks until closed
+	received        chan struct{} // when non-nil, closed once PostOrder is entered
 
 	stateByRequest map[string]*investapi.OrderState // keyed by client order_id
 	stateResp      *investapi.OrderState            // fallback for any lookup
@@ -53,6 +54,10 @@ type fakeOrders struct {
 func (f *fakeOrders) PostOrder(ctx context.Context, req *investapi.PostOrderRequest) (*investapi.PostOrderResponse, error) {
 	f.mu.Lock()
 	f.postOrderIDs = append(f.postOrderIDs, req.GetOrderId())
+	if f.received != nil {
+		close(f.received)
+		f.received = nil
+	}
 	block := f.block
 	if f.unavailableLeft > 0 {
 		f.unavailableLeft--
@@ -220,13 +225,20 @@ func TestPlaceBrokerRejection(t *testing.T) {
 func TestPlaceAmbiguousExitSevenThenReconcile(t *testing.T) {
 	block := make(chan struct{})
 	t.Cleanup(func() { close(block) })
-	fake := &fakeOrders{block: block}
+	received := make(chan struct{})
+	fake := &fakeOrders{block: block, received: received}
 	conn := newOrdersConn(t, fake)
 	led := testLedger(t)
 
-	// Short deadline so the blocked PostOrder times out as sent_unconfirmed.
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	// Cancel only after the server has demonstrably received the request, so
+	// the call is guaranteed past the send phase (sent_unconfirmed, never
+	// not_sent) regardless of scheduler timing.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	go func() {
+		<-received
+		cancel()
+	}()
 
 	intent, params := placeIntent("order-ambiguous")
 	_, cerr := placeExec(ctx, orders.New(conn), led, intent, params, false)
