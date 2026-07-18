@@ -28,6 +28,14 @@ type fakeUsers struct {
 	payInHandler       func(ctx context.Context) (*investapi.PayInResponse, error)
 }
 
+type localNoRetryError struct{}
+
+func (localNoRetryError) Error() string { return "local limit" }
+func (localNoRetryError) NoRetry() bool { return true }
+func (localNoRetryError) GRPCStatus() *status.Status {
+	return status.New(codes.ResourceExhausted, "local limit")
+}
+
 func (f *fakeUsers) GetAccounts(ctx context.Context, _ *investapi.GetAccountsRequest) (*investapi.GetAccountsResponse, error) {
 	f.mu.Lock()
 	h := f.getAccountsHandler
@@ -172,6 +180,25 @@ func TestResourceExhaustedNotRetriedWhenPolicyDisabled(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Errorf("calls = %d, want 1 (RateLimitRetry disabled)", got)
+	}
+}
+
+func TestLocalNoRetryErrorStopsRetryLoop(t *testing.T) {
+	policy := RetryPolicy{
+		MaxAttempts: 3, PerCallCodes: []codes.Code{codes.ResourceExhausted}, RateLimitRetry: true,
+	}
+	interceptor := NewUnaryClientInterceptor(policy)
+	calls := 0
+	err := interceptor(
+		context.Background(), investapi.UsersService_GetAccounts_FullMethodName,
+		&investapi.GetAccountsRequest{}, &investapi.GetAccountsResponse{}, nil,
+		func(context.Context, string, any, any, *grpc.ClientConn, ...grpc.CallOption) error {
+			calls++
+			return localNoRetryError{}
+		},
+	)
+	if status.Code(err) != codes.ResourceExhausted || calls != 1 {
+		t.Fatalf("error = %v, calls = %d; want one local RATE_LIMITED result", err, calls)
 	}
 }
 

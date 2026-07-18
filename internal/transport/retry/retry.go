@@ -116,6 +116,9 @@ func NewUnaryClientInterceptor(policy RetryPolicy) grpc.UnaryClientInterceptor {
 			if lastErr == nil {
 				return nil
 			}
+			if local, ok := lastErr.(interface{ NoRetry() bool }); ok && local.NoRetry() {
+				return lastErr
+			}
 
 			code := status.Code(lastErr)
 			if code == codes.ResourceExhausted && policy.RateLimitRetry {

@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 
+	"tinvest/internal/ratelimit"
 	"tinvest/internal/transport/retry"
 )
 
@@ -48,6 +49,9 @@ type Config struct {
 	// RetryPolicy, when Retry is nil, builds the default retry interceptor
 	// via retry.NewUnaryClientInterceptor. Leave both nil to disable retries.
 	RetryPolicy *retry.RetryPolicy
+	// RateLimiter, when non-nil, throttles every unary wire attempt inside the
+	// retry loop. Nil disables client-side limiting (the --no-rate-limit path).
+	RateLimiter *ratelimit.Limiter
 	// Credentials overrides transport security; nil means TLS with system
 	// roots. Tests inject insecure credentials here. When set, CAFile is
 	// ignored — the caller has already decided how trust is established.
@@ -96,9 +100,16 @@ func Dial(_ context.Context, cfg Config, extra ...grpc.DialOption) (*grpc.Client
 	if retryInterceptor != nil {
 		chain = append(chain, retryInterceptor)
 	}
+	if cfg.RateLimiter != nil {
+		chain = append(chain, cfg.RateLimiter.UnaryClientInterceptor())
+	}
 	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(creds),
 		grpc.WithChainUnaryInterceptor(chain...),
+		grpc.WithChainStreamInterceptor(
+			streamMetadataInterceptor("authorization", "Bearer "+cfg.Token),
+			streamMetadataInterceptor("x-app-name", appName),
+		),
 		grpc.WithStatsHandler(phaseStats{}),
 	}
 	opts = append(opts, extra...)
@@ -145,5 +156,15 @@ func metadataInterceptor(key, value string) grpc.UnaryClientInterceptor {
 	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 		ctx = metadata.AppendToOutgoingContext(ctx, key, value)
 		return invoker(ctx, method, req, reply, cc, opts...)
+	}
+}
+
+// streamMetadataInterceptor adds authentication/app identity without a
+// default deadline: stream lifetime is governed by cancellation and the ping
+// watchdog, not the 10-second unary call timeout.
+func streamMetadataInterceptor(key, value string) grpc.StreamClientInterceptor {
+	return func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+		ctx = metadata.AppendToOutgoingContext(ctx, key, value)
+		return streamer(ctx, desc, cc, method, opts...)
 	}
 }

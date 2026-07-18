@@ -72,6 +72,7 @@ tinvest signals …       # signal strategies / signals
 tinvest orders …        # place / list / cancel / replace / wait / reconcile
 tinvest stop-orders …   # take-profit / stop-loss / stop-limit, never auto-retried
 tinvest sandbox …       # sandbox account open / close / accounts / topup
+tinvest stream …        # resilient market/account/order streams as NDJSON
 ```
 
 ### Orders
@@ -193,7 +194,43 @@ tinvest signals strategies
 tinvest signals list --strategy <strategy-id>
 ```
 
-Global flags: `--profile <name>` (config profile), `--account <id>`, `-o json|table`, `--token-file <path>`, `--timeout <duration>` (per-call deadline, default 10s), `--sandbox` (shortcut for the sandbox endpoint).
+### Streams
+
+Streams always write NDJSON to stdout: exactly one complete JSON object per
+line, without the normal unary response envelope. Every event starts with
+`type` and carries `schema_version` plus an RFC 3339 UTC `time`. Data frames
+use types such as `candle`, `orderbook`, `trade`, `last_price`, `portfolio`,
+`positions`, and `order_trade`; connection state is explicit through
+`connected`, `disconnected`, `resubscribed`, and `lagging` frames.
+
+```sh
+tinvest stream marketdata --instrument SBER@TQBR --candles=1m --trades --last-price
+tinvest stream marketdata --instrument <uid> --orderbook=20 --info
+tinvest stream portfolio --account <id>
+tinvest stream positions --account <id>
+tinvest stream orders --account <id>
+```
+
+Dropped or silent streams reconnect with capped jittered exponential backoff.
+Market-data subscriptions are replayed from a de-duplicated registry; every
+order-book connection/reconnection also fetches `GetOrderBook` and emits a
+`snapshot` event so consumers can replace potentially gapped local state;
+buffered order-book frames older than that snapshot are discarded. Replay is
+capped at 100 subscription requests per rolling minute. Server pings are
+requested every 10 seconds and a 30-second no-data-or-ping watchdog forces
+reconnection. SIGINT/SIGTERM emits a final `disconnected` event with reason
+`shutdown`, flushes it, and exits successfully.
+
+Unary RPCs share process-local token buckets by broker method group. Static
+defaults are 600/min market data, 300/min operations and sandbox, 200/min
+instruments (15/min for the heavy list methods), 100/min orders/users/signals,
+and 50/min stop orders, with a two-second maximum local wait. Every retry
+attempt consumes a token. At connection startup the CLI makes a one-second,
+best-effort `GetUserTariff` refresh; static defaults remain active if it is
+unavailable. `--no-rate-limit` disables both this client-side guardrail and
+the refresh; broker-side limits still apply.
+
+Global flags: `--profile <name>` (config profile), `--account <id>`, `-o json|table`, `--token-file <path>`, `--timeout <duration>` (per-call deadline, default 10s), `--sandbox` (shortcut for the sandbox endpoint), `--no-rate-limit` (disable local unary throttling).
 
 Output is a uniform JSON envelope (`{"ok":…,"data":…,"meta":{…}}`) with a stable `schema_version`; errors carry a machine-readable classification and map to a fixed exit-code contract (`0` ok, `1` internal, `2` usage, `3` auth, `4` rate-limited, `5` rejected by broker, `6` network/timeout, `7` mutation sent but unconfirmed). JSON is the default when stdout is not a terminal; `-o` or `TINVEST_OUTPUT` overrides unconditionally.
 
@@ -211,8 +248,6 @@ policy_file = "~/.config/tinvest/policy.toml"   # optional pre-trade guardrails
 ```
 
 Token resolution order: `--token-file` flag, then `TINVEST_TOKEN`, then the profile's `token_file`.
-
-Planned command group: `stream`.
 
 ## Disclaimer
 

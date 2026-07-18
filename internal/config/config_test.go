@@ -270,6 +270,18 @@ func TestCAFileUnsetByDefault(t *testing.T) {
 	}
 }
 
+func TestNoRateLimitFlagPropagatesToSettings(t *testing.T) {
+	clearEnv(t)
+	writeConfig(t, "")
+	settings, err := Load(Flags{NoRateLimit: true})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !settings.NoRateLimit {
+		t.Fatal("NoRateLimit = false, want true")
+	}
+}
+
 func TestCAFileFromProfile(t *testing.T) {
 	clearEnv(t)
 	writeConfig(t, "[profiles.main]\nca_file = \"/etc/tinvest/russian-trusted-ca.pem\"\n")

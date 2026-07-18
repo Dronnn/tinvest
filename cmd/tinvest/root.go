@@ -5,12 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 
 	brokerinstruments "tinvest/internal/broker/instruments"
+	brokerusers "tinvest/internal/broker/users"
 	"tinvest/internal/config"
+	"tinvest/internal/ratelimit"
 	"tinvest/internal/render"
 	"tinvest/internal/transport"
 	"tinvest/internal/transport/retry"
@@ -29,10 +35,18 @@ type app struct {
 	ledgerDir string
 }
 
+const tariffRefreshTimeout = time.Second
+
 func execute() int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return executeContext(ctx)
+}
+
+func executeContext(ctx context.Context) int {
 	a := &app{}
 	root := a.rootCmd()
-	err := root.Execute()
+	err := root.ExecuteContext(ctx)
 	if err == nil {
 		return render.ExitOK
 	}
@@ -42,12 +56,46 @@ func execute() int {
 	}
 	// Anything else is a cobra-level usage error (unknown command or flag);
 	// cobra already printed the human-readable message to stderr. Emit the
-	// machine envelope unless the user explicitly asked for tables.
+	// stream contract as one NDJSON error frame, or the normal machine
+	// envelope unless the user explicitly asked for tables.
 	uerr := render.UsageError(err.Error())
+	if isStreamInvocation(os.Args[1:]) {
+		writer := render.NewNDJSONWriter(os.Stdout)
+		event := render.NewStreamEvent("error", time.Now(), nil)
+		event.Error = uerr.Body()
+		_ = writer.Write(event)
+		return uerr.ExitCode()
+	}
 	if render.Mode(os.Getenv(config.EnvOutput), os.Stdout) == "json" {
 		_ = render.WriteJSON(os.Stdout, render.Failure(uerr, render.NewMeta("", "", 0)))
 	}
 	return uerr.ExitCode()
+}
+
+func isStreamInvocation(args []string) bool {
+	valueFlags := map[string]bool{
+		"--profile": true, "--account": true, "--output": true, "-o": true,
+		"--token-file": true, "--timeout": true,
+	}
+	for i := 0; i < len(args); i++ {
+		argument := args[i]
+		if valueFlags[argument] {
+			i++
+			continue
+		}
+		if argument == "--sandbox" || argument == "--no-rate-limit" ||
+			strings.HasPrefix(argument, "--sandbox=") || strings.HasPrefix(argument, "--no-rate-limit=") {
+			continue
+		}
+		if strings.HasPrefix(argument, "--profile=") || strings.HasPrefix(argument, "--account=") ||
+			strings.HasPrefix(argument, "--output=") || strings.HasPrefix(argument, "--token-file=") ||
+			strings.HasPrefix(argument, "--timeout=") || strings.HasPrefix(argument, "-o=") ||
+			(strings.HasPrefix(argument, "-o") && len(argument) > len("-o")) {
+			continue
+		}
+		return argument == "stream"
+	}
+	return false
 }
 
 func (a *app) rootCmd() *cobra.Command {
@@ -65,12 +113,13 @@ func (a *app) rootCmd() *cobra.Command {
 	pf.StringVar(&a.flags.TokenFile, "token-file", "", "file containing the API token (overrides TINVEST_TOKEN)")
 	pf.DurationVar(&a.flags.Timeout, "timeout", 0, "per-call deadline (default 10s)")
 	pf.BoolVar(&a.flags.Sandbox, "sandbox", false, "shortcut: use the sandbox endpoint")
+	pf.BoolVar(&a.flags.NoRateLimit, "no-rate-limit", false, "disable client-side unary rate limiting")
 
 	root.AddCommand(
 		a.versionCmd(), a.tokenCmd(), a.accountsCmd(), a.userCmd(),
 		a.portfolioCmd(), a.positionsCmd(), a.balanceCmd(), a.operationsCmd(), a.tradesCmd(),
 		a.instrumentsCmd(), a.quotesCmd(), a.orderbookCmd(), a.candlesCmd(), a.signalsCmd(),
-		a.ordersCmd(), a.stopOrdersCmd(), a.sandboxCmd(),
+		a.ordersCmd(), a.stopOrdersCmd(), a.sandboxCmd(), a.streamCmd(),
 	)
 	return root
 }
@@ -99,15 +148,29 @@ func (a *app) connect(ctx context.Context, settings config.Settings) (*grpc.Clie
 	// retry.Idempotent (plan §9). Enabling it here is safe because eligibility
 	// is decided per-call, not per-connection.
 	policy := retry.DefaultRetryPolicy()
+	var limiter *ratelimit.Limiter
+	if !settings.NoRateLimit {
+		limiter = ratelimit.New(ratelimit.DefaultLimits(), ratelimit.DefaultMaxWait)
+	}
 	conn, err := transport.Dial(ctx, transport.Config{
 		Endpoint:    settings.Endpoint,
 		Token:       settings.Token,
 		Timeout:     settings.Timeout,
 		CAFile:      settings.CAFile,
 		RetryPolicy: &policy,
+		RateLimiter: limiter,
 	})
 	if err != nil {
 		return nil, render.UsageError(fmt.Sprintf("invalid endpoint %q: %v", settings.Endpoint, err))
+	}
+	if limiter != nil {
+		refreshTimeout := tariffRefreshTimeout
+		if settings.Timeout > 0 && settings.Timeout < refreshTimeout {
+			refreshTimeout = settings.Timeout
+		}
+		refreshCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
+		_, _ = brokerusers.New(conn).Tariff(refreshCtx)
+		cancel()
 	}
 	return conn, nil
 }

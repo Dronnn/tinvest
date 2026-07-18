@@ -27,6 +27,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 
 	investapi "tinvest/internal/pb/investapi"
+	"tinvest/internal/ratelimit"
 	"tinvest/internal/transport/retry"
 )
 
@@ -40,6 +41,18 @@ type fakeUsers struct {
 	deadlineIn  time.Duration
 
 	handler func(ctx context.Context) (*investapi.GetAccountsResponse, error)
+}
+
+type fakeMarketStream struct {
+	investapi.UnimplementedMarketDataStreamServiceServer
+	metadata chan metadata.MD
+}
+
+func (f *fakeMarketStream) MarketDataStream(stream grpc.BidiStreamingServer[investapi.MarketDataRequest, investapi.MarketDataResponse]) error {
+	md, _ := metadata.FromIncomingContext(stream.Context())
+	f.metadata <- md
+	<-stream.Context().Done()
+	return stream.Context().Err()
 }
 
 func (f *fakeUsers) GetAccounts(ctx context.Context, _ *investapi.GetAccountsRequest) (*investapi.GetAccountsResponse, error) {
@@ -108,6 +121,45 @@ func TestAuthAndAppNameMetadata(t *testing.T) {
 	}
 	if info.Phase() != PhaseConfirmed {
 		t.Errorf("phase = %s, want confirmed", info.Phase())
+	}
+}
+
+func TestAuthAndAppNameMetadataOnStreams(t *testing.T) {
+	lis := bufconn.Listen(1 << 20)
+	fake := &fakeMarketStream{metadata: make(chan metadata.MD, 1)}
+	server := grpc.NewServer()
+	investapi.RegisterMarketDataStreamServiceServer(server, fake)
+	go func() { _ = server.Serve(lis) }()
+	t.Cleanup(server.Stop)
+
+	conn, err := Dial(context.Background(), Config{
+		Endpoint: "passthrough:///bufnet", Token: "stream-token", Credentials: insecure.NewCredentials(),
+	}, grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+		return lis.DialContext(ctx)
+	}))
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	client, err := investapi.NewMarketDataStreamServiceClient(conn).MarketDataStream(ctx)
+	if err != nil {
+		t.Fatalf("MarketDataStream: %v", err)
+	}
+	defer cancel()
+	if err := client.Send(&investapi.MarketDataRequest{}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	select {
+	case md := <-fake.metadata:
+		if got := md.Get("authorization"); len(got) != 1 || got[0] != "Bearer stream-token" {
+			t.Errorf("authorization = %v", got)
+		}
+		if got := md.Get("x-app-name"); len(got) != 1 || got[0] != appName {
+			t.Errorf("x-app-name = %v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stream handler did not receive metadata")
 	}
 }
 
@@ -255,6 +307,61 @@ func TestRetrySeamIsChained(t *testing.T) {
 	defer fake.mu.Unlock()
 	if got := fake.gotMD.Get("authorization"); len(got) != 1 {
 		t.Errorf("authorization metadata missing through the retry seam: %v", got)
+	}
+}
+
+func TestRateLimiterIsChainedOutsideUnaryCall(t *testing.T) {
+	fake := &fakeUsers{}
+	lis := startServer(t, fake)
+	limiter := ratelimit.New([]ratelimit.Limit{{
+		Group: "users", Methods: []string{investapi.UsersService_GetAccounts_FullMethodName},
+		PerSecond: 20, Burst: 1,
+	}}, 200*time.Millisecond)
+	conn := dialBuf(t, lis, Config{Token: "t", RateLimiter: limiter})
+	client := investapi.NewUsersServiceClient(conn)
+
+	if _, err := client.GetAccounts(context.Background(), &investapi.GetAccountsRequest{}); err != nil {
+		t.Fatalf("first GetAccounts: %v", err)
+	}
+	start := time.Now()
+	if _, err := client.GetAccounts(context.Background(), &investapi.GetAccountsRequest{}); err != nil {
+		t.Fatalf("second GetAccounts: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < 35*time.Millisecond {
+		t.Fatalf("second call waited %v, want limiter delay", elapsed)
+	}
+}
+
+func TestRateLimiterChargesEveryRetryAttempt(t *testing.T) {
+	var calls int32
+	fake := &fakeUsers{handler: func(context.Context) (*investapi.GetAccountsResponse, error) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			return nil, status.Error(codes.Unavailable, "retry")
+		}
+		return &investapi.GetAccountsResponse{}, nil
+	}}
+	lis := startServer(t, fake)
+	limiter := ratelimit.New([]ratelimit.Limit{{
+		Group: "users", Methods: []string{investapi.UsersService_GetAccounts_FullMethodName},
+		PerSecond: 10, Burst: 1,
+	}}, 250*time.Millisecond)
+	retryImmediately := func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		if err := invoker(ctx, method, req, reply, cc, opts...); err == nil {
+			return nil
+		}
+		return invoker(ctx, method, req, reply, cc, opts...)
+	}
+	conn := dialBuf(t, lis, Config{Token: "t", RateLimiter: limiter, Retry: retryImmediately})
+
+	started := time.Now()
+	if _, err := investapi.NewUsersServiceClient(conn).GetAccounts(context.Background(), &investapi.GetAccountsRequest{}); err != nil {
+		t.Fatalf("GetAccounts: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < 85*time.Millisecond {
+		t.Fatalf("retry completed in %v, want second token to delay the wire attempt", elapsed)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("calls = %d, want 2", got)
 	}
 }
 

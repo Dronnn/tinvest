@@ -32,24 +32,26 @@ const (
 // Flags carries the global command-line flags that participate in resolution.
 // Flag values win over environment variables, which win over the config file.
 type Flags struct {
-	Profile   string
-	AccountID string
-	Output    string
-	TokenFile string
-	Timeout   time.Duration
-	Sandbox   bool
+	Profile     string
+	AccountID   string
+	Output      string
+	TokenFile   string
+	Timeout     time.Duration
+	Sandbox     bool
+	NoRateLimit bool
 }
 
 // Settings is the fully resolved configuration for one invocation.
 type Settings struct {
-	Profile    string
-	Endpoint   string // resolved host:port
-	AccountID  string
-	Output     string // "json", "table", or "" (auto: TTY sniffing)
-	Token      string // "" when no token source is configured
-	Timeout    time.Duration
-	PolicyFile string // path to the profile's policy file, or "" if none
-	CAFile     string // custom CA bundle (PEM); "" means system trust store
+	Profile     string
+	Endpoint    string // resolved host:port
+	AccountID   string
+	Output      string // "json", "table", or "" (auto: TTY sniffing)
+	Token       string // "" when no token source is configured
+	Timeout     time.Duration
+	PolicyFile  string // path to the profile's policy file, or "" if none
+	CAFile      string // custom CA bundle (PEM); "" means system trust store
+	NoRateLimit bool   // disables the process-local unary token buckets
 }
 
 // File mirrors ~/.config/tinvest/config.toml.
@@ -127,14 +129,15 @@ func Load(flags Flags) (Settings, error) {
 	}
 
 	return Settings{
-		Profile:    name,
-		Endpoint:   endpoint,
-		AccountID:  firstNonEmpty(flags.AccountID, profile.AccountID),
-		Output:     output,
-		Token:      token,
-		Timeout:    flags.Timeout,
-		PolicyFile: profile.PolicyFile,
-		CAFile:     caFile,
+		Profile:     name,
+		Endpoint:    endpoint,
+		AccountID:   firstNonEmpty(flags.AccountID, profile.AccountID),
+		Output:      output,
+		Token:       token,
+		Timeout:     flags.Timeout,
+		PolicyFile:  profile.PolicyFile,
+		CAFile:      caFile,
+		NoRateLimit: flags.NoRateLimit,
 	}, nil
 }
 
