@@ -221,6 +221,63 @@ func TestReplayLimiterCapsSubscriptionRequestsAcrossReconnects(t *testing.T) {
 	}
 }
 
+func TestLifecycleCountExcludesReplayableControlRequests(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	registry := streamrunner.NewRegistry[int]()
+	subscription, control := 1, 2
+	registry.Add("last-price", &subscription)
+	registry.AddControl("ping-settings", &control)
+	sent := 0
+	connectedSubscriptions := -1
+	runner := streamrunner.Runner[int, int]{
+		Open: func(streamCtx context.Context) (streamrunner.Session[int, int], error) {
+			return streamrunner.Session[int, int]{
+				Send: func(*int) error {
+					sent++
+					return nil
+				},
+				Recv: func() (*int, error) {
+					<-streamCtx.Done()
+					return nil, streamCtx.Err()
+				},
+			}, nil
+		},
+		Subscriptions: registry,
+		OnLifecycle: func(event streamrunner.LifecycleEvent) error {
+			if event.Type == streamrunner.EventConnected {
+				connectedSubscriptions = event.Subscriptions
+				cancel()
+			}
+			return nil
+		},
+	}
+	if err := runner.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if sent != 2 {
+		t.Fatalf("replayed requests = %d, want subscription plus control request", sent)
+	}
+	if connectedSubscriptions != 1 {
+		t.Fatalf("connected subscriptions = %d, want 1", connectedSubscriptions)
+	}
+}
+
+func TestReplaySnapshotPairsRequestsWithSubscriptionCount(t *testing.T) {
+	registry := streamrunner.NewRegistry[int]()
+	subscription, control := 1, 2
+	registry.Add("last-price", &subscription)
+	registry.AddControl("ping-settings", &control)
+
+	requests, subscriptionCount := registry.ReplaySnapshot()
+	if len(requests) != 2 {
+		t.Fatalf("replay requests = %d, want 2", len(requests))
+	}
+	if subscriptionCount != 1 {
+		t.Fatalf("subscription request batches = %d, want 1", subscriptionCount)
+	}
+}
+
 func (s *chaosMarketDataServer) MarketDataStream(stream grpc.BidiStreamingServer[investapi.MarketDataRequest, investapi.MarketDataResponse]) error {
 	s.mu.Lock()
 	connection := s.connections

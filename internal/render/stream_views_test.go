@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/encoding/protowire"
+
 	investapi "tinvest/internal/pb/investapi"
 )
 
@@ -41,5 +43,47 @@ func TestOrdersStreamTradeUsesStringQuantityAndNormalizedPrice(t *testing.T) {
 	}
 	if view.Trades[0].Quantity != "9007199254740993" || view.Trades[0].Price.Value != "99.25" {
 		t.Fatalf("trade = %+v", view.Trades[0])
+	}
+}
+
+func TestEmptyMarketDataResponseIsTypedControl(t *testing.T) {
+	event := MarketDataStreamEvent(&investapi.MarketDataResponse{}, time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC))
+	if event.Type != "control" {
+		t.Fatalf("event type = %q, want control", event.Type)
+	}
+	view, ok := event.Data.(ControlStreamView)
+	if !ok {
+		t.Fatalf("data type = %T, want ControlStreamView", event.Data)
+	}
+	if view.Kind != "empty_response" || view.ProtobufOneofCase != "none" {
+		t.Fatalf("view = %+v", view)
+	}
+}
+
+func TestUnknownMarketDataFrameNamesUnrecognizedProtobufField(t *testing.T) {
+	response := &investapi.MarketDataResponse{}
+	unknown := protowire.AppendTag(nil, 99, protowire.BytesType)
+	response.ProtoReflect().SetUnknown(protowire.AppendBytes(unknown, nil))
+	event := MarketDataStreamEvent(response, time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC))
+	if event.Type != "unknown" {
+		t.Fatalf("event type = %q, want unknown", event.Type)
+	}
+	view, ok := event.Data.(UnknownStreamView)
+	if !ok {
+		t.Fatalf("data type = %T, want UnknownStreamView", event.Data)
+	}
+	if view.ProtobufOneofCase != "unknown_field_99" {
+		t.Fatalf("protobuf oneof case = %q, want unknown_field_99", view.ProtobufOneofCase)
+	}
+}
+
+func TestNilMarketDataFrameCarriesUnknownCaseData(t *testing.T) {
+	event := MarketDataStreamEvent(nil, time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC))
+	if event.Type != "unknown" {
+		t.Fatalf("event type = %q, want unknown", event.Type)
+	}
+	view, ok := event.Data.(UnknownStreamView)
+	if !ok || view.ProtobufOneofCase != "nil_message" {
+		t.Fatalf("data = %#v, want nil_message case", event.Data)
 	}
 }

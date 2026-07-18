@@ -84,6 +84,19 @@ func TestMarketDataSubscriptionsContainEachRequestedShapeOnce(t *testing.T) {
 	}
 }
 
+func TestMarketDataSubscriptionsExcludePingSettingsFromRequestBatchCount(t *testing.T) {
+	registry, err := MarketDataSubscriptions([]string{"uid-1"}, MarketDataOptions{LastPrice: true})
+	if err != nil {
+		t.Fatalf("MarketDataSubscriptions: %v", err)
+	}
+	if got := len(registry.Snapshot()); got != 2 {
+		t.Fatalf("replay requests = %d, want last-price subscription plus ping settings", got)
+	}
+	if got := registry.SubscriptionCount(); got != 1 {
+		t.Fatalf("subscription request batches = %d, want 1", got)
+	}
+}
+
 func TestActivityClassifiersIgnoreSubscriptionAcknowledgements(t *testing.T) {
 	marketAck := &investapi.MarketDataResponse{Payload: &investapi.MarketDataResponse_SubscribeTradesResponse{
 		SubscribeTradesResponse: &investapi.SubscribeTradesResponse{},

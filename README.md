@@ -50,6 +50,24 @@ make lint      # golangci-lint via pinned go run
 make proto     # regenerate gRPC stubs from vendored protos
 ```
 
+## Install from a release
+
+Download the archive for your OS and architecture plus `checksums.txt` from
+[GitHub Releases](https://github.com/Dronnn/tinvest/releases), verify the
+archive checksum, extract it, and place `tinvest` on your `PATH`.
+
+## Shell completions
+
+The built-in `completion` command generates scripts for bash, zsh, and fish:
+
+```sh
+source <(tinvest completion bash)        # bash, current session
+source <(tinvest completion zsh)         # zsh, after compinit
+tinvest completion fish | source         # fish, current session
+```
+
+Use `tinvest completion <shell> --help` for persistent installation paths.
+
 ## Usage
 
 The command surface is under active development. Currently available:
@@ -201,7 +219,10 @@ line, without the normal unary response envelope. Every event starts with
 `type` and carries `schema_version` plus an RFC 3339 UTC `time`. Data frames
 use types such as `candle`, `orderbook`, `trade`, `last_price`, `portfolio`,
 `positions`, and `order_trade`; connection state is explicit through
-`connected`, `disconnected`, `resubscribed`, and `lagging` frames.
+`connected`, `disconnected`, `resubscribed`, and `lagging` frames. Broker
+subscription acknowledgements use `subscription`; empty broker control frames
+use `control`. Unsupported protobuf frames use `unknown` with the oneof case
+named in `data.protobuf_oneof_case`.
 
 ```sh
 tinvest stream marketdata --instrument SBER@TQBR --candles=1m --trades --last-price

@@ -200,7 +200,7 @@ func (l *Ledger) openMonth(t time.Time) error {
 	_, statErr := os.Stat(path)
 	created := errors.Is(statErr, os.ErrNotExist)
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, filePerm)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, filePerm)
 	if err != nil {
 		return fmt.Errorf("ledger: open %s: %w", path, err)
 	}

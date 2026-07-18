@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
 	investapi "tinvest/internal/pb/investapi"
@@ -108,9 +109,21 @@ type OpenInterestStreamView struct {
 	ValueTime     string `json:"value_time,omitempty"`
 }
 
+type ControlStreamView struct {
+	Kind              string `json:"kind"`
+	ProtobufOneofCase string `json:"protobuf_oneof_case"`
+}
+
+type UnknownStreamView struct {
+	ProtobufOneofCase string `json:"protobuf_oneof_case"`
+}
+
 // MarketDataStreamEvent converts every MarketDataResponse oneof into one
 // standalone, stable NDJSON frame.
 func MarketDataStreamEvent(response *investapi.MarketDataResponse, at time.Time) StreamEvent {
+	if response != nil && response.GetPayload() == nil && len(response.ProtoReflect().GetUnknown()) == 0 {
+		return NewStreamEvent("control", at, ControlStreamView{Kind: "empty_response", ProtobufOneofCase: "none"})
+	}
 	switch payload := response.GetPayload().(type) {
 	case *investapi.MarketDataResponse_Candle:
 		value := payload.Candle
@@ -164,7 +177,7 @@ func MarketDataStreamEvent(response *investapi.MarketDataResponse, at time.Time)
 	case *investapi.MarketDataResponse_SubscribeLastPriceResponse:
 		return subscriptionEvent("last_price", payload.SubscribeLastPriceResponse, at)
 	default:
-		return NewStreamEvent("unknown", at, nil)
+		return unknownStreamEvent(response, at)
 	}
 }
 
@@ -189,7 +202,7 @@ func PortfolioStreamEvent(response *investapi.PortfolioStreamResponse, at time.T
 	if value := response.GetSubscriptions(); value != nil {
 		return subscriptionEvent("portfolio", value, at)
 	}
-	return NewStreamEvent("unknown", at, nil)
+	return unknownStreamEvent(response, at)
 }
 
 func PositionsStreamEvent(response *investapi.PositionsStreamResponse, at time.Time) StreamEvent {
@@ -209,7 +222,7 @@ func PositionsStreamEvent(response *investapi.PositionsStreamResponse, at time.T
 	if value := response.GetSubscriptions(); value != nil {
 		return subscriptionEvent("positions", value, at)
 	}
-	return NewStreamEvent("unknown", at, nil)
+	return unknownStreamEvent(response, at)
 }
 
 type PositionMoneyView struct {
@@ -301,7 +314,28 @@ func OrdersStreamEvent(response *investapi.TradesStreamResponse, at time.Time) S
 	if value := response.GetSubscription(); value != nil {
 		return subscriptionEvent("orders", value, at)
 	}
-	return NewStreamEvent("unknown", at, nil)
+	return unknownStreamEvent(response, at)
+}
+
+func unknownStreamEvent(message proto.Message, at time.Time) StreamEvent {
+	caseName := "nil_message"
+	if message != nil {
+		reflected := message.ProtoReflect()
+		if reflected.IsValid() {
+			caseName = "none"
+			if payload := reflected.Descriptor().Oneofs().ByName("payload"); payload != nil {
+				if field := reflected.WhichOneof(payload); field != nil {
+					caseName = string(field.Name())
+				}
+			}
+			if caseName == "none" {
+				if fieldNumber, _, consumed := protowire.ConsumeTag(reflected.GetUnknown()); consumed > 0 {
+					caseName = "unknown_field_" + strconv.Itoa(int(fieldNumber))
+				}
+			}
+		}
+	}
+	return NewStreamEvent("unknown", at, UnknownStreamView{ProtobufOneofCase: caseName})
 }
 
 func protoView(value proto.Message) json.RawMessage {

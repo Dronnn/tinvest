@@ -27,3 +27,5 @@ docs/
 logs/
 .mcp.json
 .claude/
+/man/
+/completions/

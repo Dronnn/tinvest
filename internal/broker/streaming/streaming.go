@@ -209,7 +209,7 @@ func MarketDataSubscriptions(instrumentIDs []string, options MarketDataOptions) 
 			SubscribeInfoRequest: &investapi.SubscribeInfoRequest{SubscriptionAction: action, Instruments: instruments},
 		}})
 	}
-	registry.Add("ping-settings", &investapi.MarketDataRequest{Payload: &investapi.MarketDataRequest_PingSettings{PingSettings: pingSettings()}})
+	registry.AddControl("ping-settings", &investapi.MarketDataRequest{Payload: &investapi.MarketDataRequest_PingSettings{PingSettings: pingSettings()}})
 	return registry, nil
 }
 

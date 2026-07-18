@@ -100,7 +100,7 @@ func (r Runner[Request, Response]) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return r.shutdown(connections)
 		}
-		subscriptions := r.Subscriptions.Snapshot()
+		replayRequests, subscriptionCount := r.Subscriptions.ReplaySnapshot()
 		streamCtx, cancel := context.WithCancel(ctx)
 		session, err := r.Open(streamCtx)
 		if err != nil {
@@ -125,12 +125,12 @@ func (r Runner[Request, Response]) Run(ctx context.Context) error {
 			return errors.New("stream receive function is required")
 		}
 
-		if len(subscriptions) > 0 && session.Send == nil {
+		if len(replayRequests) > 0 && session.Send == nil {
 			cancel()
 			return errors.New("stream send function is required for registered subscriptions")
 		}
 		replayFailed := false
-		for _, request := range subscriptions {
+		for _, request := range replayRequests {
 			if err := replayLimiter.waitN(ctx, 1); err != nil {
 				cancel()
 				closeSession(session)
@@ -145,7 +145,7 @@ func (r Runner[Request, Response]) Run(ctx context.Context) error {
 				closeSession(session)
 				if emitErr := r.emit(LifecycleEvent{
 					Type: EventDisconnected, Time: time.Now().UTC(), Attempt: failures,
-					Subscriptions: len(subscriptions), Reason: "resubscribe_error", Err: err,
+					Subscriptions: subscriptionCount, Reason: "resubscribe_error", Err: err,
 				}); emitErr != nil {
 					return emitErr
 				}
@@ -168,7 +168,7 @@ func (r Runner[Request, Response]) Run(ctx context.Context) error {
 		connections++
 		if err := r.emit(LifecycleEvent{
 			Type: EventConnected, Time: time.Now().UTC(), Attempt: connections,
-			Subscriptions: len(subscriptions),
+			Subscriptions: subscriptionCount,
 		}); err != nil {
 			cancel()
 			closeSession(session)
@@ -177,7 +177,7 @@ func (r Runner[Request, Response]) Run(ctx context.Context) error {
 		if connections > 1 {
 			if err := r.emit(LifecycleEvent{
 				Type: EventResubscribed, Time: time.Now().UTC(), Attempt: connections,
-				Subscriptions: len(subscriptions),
+				Subscriptions: subscriptionCount,
 			}); err != nil {
 				cancel()
 				closeSession(session)
@@ -191,7 +191,7 @@ func (r Runner[Request, Response]) Run(ctx context.Context) error {
 		}
 		reconnect, err := r.receive(
 			ctx, streamCtx, cancel, session, watchdog, maxReconcileBuffer,
-			connections, len(subscriptions), &failures,
+			connections, subscriptionCount, &failures,
 		)
 		if err != nil {
 			return err

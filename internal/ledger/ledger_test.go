@@ -3,6 +3,7 @@ package ledger
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -30,6 +31,13 @@ func openTemp(t *testing.T) *Ledger {
 
 func fixedClock(l *Ledger, ts time.Time) {
 	l.now = func() time.Time { return ts }
+}
+
+func TestJournalHandleRetainsReadAccessForFileLocking(t *testing.T) {
+	l := openTemp(t)
+	if _, err := l.f.Read(make([]byte, 1)); err != io.EOF {
+		t.Fatalf("read empty journal: %v, want EOF", err)
+	}
 }
 
 func TestAppendReopenRoundTrip(t *testing.T) {
