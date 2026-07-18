@@ -1,0 +1,25 @@
+tinvest
+
+This product includes software adapted from third-party open-source
+projects. See THIRD_PARTY_LICENSES.md for the full list of provenance,
+license texts, and a summary of what changed from upstream.
+
+--------------------------------------------------------------------------
+
+internal/transport/retry/retry.go and internal/transport/retry/backoff.go
+are adapted from:
+
+  github.com/russianinvestments/invest-api-go-sdk
+  tag v1.40.1, commit 9c992f69a3a6ba3ed308e04e3b685eb6c550a109
+  package retry/ (retry.go, backoff.go)
+  Licensed under the Apache License, Version 2.0
+
+which is itself a vendored copy of:
+
+  go-grpc-middleware/v2 (github.com/grpc-ecosystem/go-grpc-middleware)
+  package interceptors/retry/
+  Copyright (c) The go-grpc-middleware Authors
+  Licensed under the Apache License, Version 2.0
+
+See THIRD_PARTY_LICENSES.md for the Apache License 2.0 text and a summary
+of the adaptations made.

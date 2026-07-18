@@ -1,7 +1,8 @@
 // Package transport owns the gRPC connection and interceptors: Bearer auth,
-// per-call deadlines, call-phase tracking, and x-tracking-id capture. A retry
-// interceptor (ported from the official Go SDK, see docs/sdk-spike.md) will be
-// chained in via Config.Retry once M1 lands.
+// per-call deadlines, call-phase tracking, and x-tracking-id capture. The
+// idempotency-aware retry interceptor (ported from the official Go SDK, see
+// docs/sdk-spike.md) lives in internal/transport/retry and is chained in via
+// Config.Retry — set explicitly, or built automatically from Config.RetryPolicy.
 package transport
 
 import (
@@ -12,6 +13,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
+
+	"tinvest/internal/transport/retry"
 )
 
 // DefaultTimeout is the per-call deadline applied when the caller's context
@@ -32,11 +35,15 @@ type Config struct {
 	// Timeout is the per-call deadline for calls without one; zero means
 	// DefaultTimeout.
 	Timeout time.Duration
-	// Retry is the seam for the idempotency-aware retry interceptor planned in
-	// M1 (docs/sdk-spike.md). When set it is chained after auth/app-name, so
-	// every attempt carries full metadata and phase tracking still observes
-	// the wire.
+	// Retry is the seam for the idempotency-aware retry interceptor
+	// (internal/transport/retry, docs/sdk-spike.md). When set it is chained
+	// after auth/app-name, so every attempt carries full metadata and phase
+	// tracking still observes the wire. Takes precedence over RetryPolicy —
+	// set this directly for full control (e.g. tests injecting a stub).
 	Retry grpc.UnaryClientInterceptor
+	// RetryPolicy, when Retry is nil, builds the default retry interceptor
+	// via retry.NewUnaryClientInterceptor. Leave both nil to disable retries.
+	RetryPolicy *retry.RetryPolicy
 	// Credentials overrides transport security; nil means TLS with system
 	// roots. Tests inject insecure credentials here.
 	Credentials credentials.TransportCredentials
@@ -59,8 +66,12 @@ func Dial(_ context.Context, cfg Config, extra ...grpc.DialOption) (*grpc.Client
 		metadataInterceptor("authorization", "Bearer "+cfg.Token),
 		metadataInterceptor("x-app-name", appName),
 	}
-	if cfg.Retry != nil {
-		chain = append(chain, cfg.Retry)
+	retryInterceptor := cfg.Retry
+	if retryInterceptor == nil && cfg.RetryPolicy != nil {
+		retryInterceptor = retry.NewUnaryClientInterceptor(*cfg.RetryPolicy)
+	}
+	if retryInterceptor != nil {
+		chain = append(chain, retryInterceptor)
 	}
 	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(creds),

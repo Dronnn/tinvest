@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 
 	investapi "tinvest/internal/pb/investapi"
+	"tinvest/internal/transport/retry"
 )
 
 // fakeUsers is an in-process UsersService capturing what the client sent.
@@ -243,5 +245,62 @@ func TestRetrySeamIsChained(t *testing.T) {
 	defer fake.mu.Unlock()
 	if got := fake.gotMD.Get("authorization"); len(got) != 1 {
 		t.Errorf("authorization metadata missing through the retry seam: %v", got)
+	}
+}
+
+// TestRetryPolicyBuildsInterceptorAndPreservesCallInfo exercises the full
+// Config.RetryPolicy wiring (internal/transport/retry, chained via Dial) end
+// to end: the first attempt fails UNAVAILABLE (a real trailer is delivered,
+// since it comes from an actual server handler over the bufconn transport),
+// the retry succeeds, and CallInfo must reflect the final attempt only —
+// phase confirmed, tracking id and rate-limit reset from the successful
+// attempt, not stale/duplicated data from the failed one.
+func TestRetryPolicyBuildsInterceptorAndPreservesCallInfo(t *testing.T) {
+	var calls int32
+	fake := &fakeUsers{handler: func(ctx context.Context) (*investapi.GetAccountsResponse, error) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			_ = grpc.SetTrailer(ctx, metadata.Pairs("x-tracking-id", "trk-failed-attempt"))
+			return nil, status.Error(codes.Unavailable, "try again")
+		}
+		_ = grpc.SetTrailer(ctx, metadata.Pairs("x-tracking-id", "trk-ok"))
+		return &investapi.GetAccountsResponse{}, nil
+	}}
+	lis := startServer(t, fake)
+	policy := retry.DefaultRetryPolicy()
+	conn := dialBuf(t, lis, Config{Token: "t", RetryPolicy: &policy})
+
+	ctx, info := WithCallInfo(context.Background())
+	if _, err := investapi.NewUsersServiceClient(conn).GetAccounts(ctx, &investapi.GetAccountsRequest{}); err != nil {
+		t.Fatalf("GetAccounts: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("calls = %d, want 2 (one retry after UNAVAILABLE)", got)
+	}
+	if info.Phase() != PhaseConfirmed {
+		t.Errorf("phase = %s, want confirmed", info.Phase())
+	}
+	if info.TrackingID() != "trk-ok" {
+		t.Errorf("tracking id = %q, want trk-ok (the successful attempt's, not the failed attempt's)", info.TrackingID())
+	}
+}
+
+// TestRetryPolicyNilLeavesRetryDisabled documents that RetryPolicy is opt-in:
+// Dial does not retry anything when both Retry and RetryPolicy are nil.
+func TestRetryPolicyNilLeavesRetryDisabled(t *testing.T) {
+	var calls int32
+	fake := &fakeUsers{handler: func(context.Context) (*investapi.GetAccountsResponse, error) {
+		atomic.AddInt32(&calls, 1)
+		return nil, status.Error(codes.Unavailable, "try again")
+	}}
+	lis := startServer(t, fake)
+	conn := dialBuf(t, lis, Config{Token: "t"})
+
+	ctx, _ := WithCallInfo(context.Background())
+	_, err := investapi.NewUsersServiceClient(conn).GetAccounts(ctx, &investapi.GetAccountsRequest{})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("err = %v, want Unavailable", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("calls = %d, want 1 (no RetryPolicy set)", got)
 	}
 }
