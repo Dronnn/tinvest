@@ -6,8 +6,12 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"fmt"
+	"os"
 	"time"
 
 	"google.golang.org/grpc"
@@ -45,8 +49,16 @@ type Config struct {
 	// via retry.NewUnaryClientInterceptor. Leave both nil to disable retries.
 	RetryPolicy *retry.RetryPolicy
 	// Credentials overrides transport security; nil means TLS with system
-	// roots. Tests inject insecure credentials here.
+	// roots. Tests inject insecure credentials here. When set, CAFile is
+	// ignored — the caller has already decided how trust is established.
 	Credentials credentials.TransportCredentials
+	// CAFile, when non-empty, points to a PEM bundle (one or more
+	// certificates, e.g. the Russian Trusted Root CA + Sub CA — see the
+	// README's "Russian CA certificates" section) used INSTEAD of the system
+	// trust store to verify the server certificate. Hostname verification is
+	// unaffected: this only swaps the root pool, it never disables
+	// verification. Ignored when Credentials is set.
+	CAFile string
 }
 
 // Dial returns a client connection with the full interceptor chain installed.
@@ -55,7 +67,18 @@ type Config struct {
 func Dial(_ context.Context, cfg Config, extra ...grpc.DialOption) (*grpc.ClientConn, error) {
 	creds := cfg.Credentials
 	if creds == nil {
-		creds = credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})
+		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+		if cfg.CAFile != "" {
+			pool, err := loadCAPool(cfg.CAFile)
+			if err != nil {
+				return nil, err
+			}
+			// ServerName is left untouched: only the root pool changes, so
+			// hostname verification stays normal (plan §14 forbids an
+			// insecure-skip-verify option).
+			tlsConfig.RootCAs = pool
+		}
+		creds = credentials.NewTLS(tlsConfig)
 	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {
@@ -80,6 +103,28 @@ func Dial(_ context.Context, cfg Config, extra ...grpc.DialOption) (*grpc.Client
 	}
 	opts = append(opts, extra...)
 	return grpc.NewClient(cfg.Endpoint, opts...)
+}
+
+// loadCAPool reads a PEM bundle (root + intermediate/sub CA certs, e.g. the
+// Russian Trusted Root CA and Sub CA required to reach T-Bank's endpoints —
+// see the README's "Russian CA certificates" section) and returns a cert
+// pool built from it. Errors here are plain config-shaped errors (empty
+// file, unreadable path, no valid PEM certificates), the same class as the
+// other validation failures in internal/config: they map to the usage exit
+// code, never to a network/auth one.
+func loadCAPool(path string) (*x509.CertPool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read CA file %s: %w", path, err)
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, fmt.Errorf("CA file %s is empty", path)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(data) {
+		return nil, fmt.Errorf("CA file %s contains no valid PEM certificates", path)
+	}
+	return pool, nil
 }
 
 // deadlineInterceptor applies the default per-call deadline when the caller

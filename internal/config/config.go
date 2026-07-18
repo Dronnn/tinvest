@@ -26,6 +26,7 @@ const (
 	EnvToken   = "TINVEST_TOKEN"
 	EnvProfile = "TINVEST_PROFILE"
 	EnvOutput  = "TINVEST_OUTPUT"
+	EnvCAFile  = "TINVEST_CA_FILE"
 )
 
 // Flags carries the global command-line flags that participate in resolution.
@@ -48,6 +49,7 @@ type Settings struct {
 	Token      string // "" when no token source is configured
 	Timeout    time.Duration
 	PolicyFile string // path to the profile's policy file, or "" if none
+	CAFile     string // custom CA bundle (PEM); "" means system trust store
 }
 
 // File mirrors ~/.config/tinvest/config.toml.
@@ -63,6 +65,7 @@ type Profile struct {
 	Output     string `toml:"output"`
 	TokenFile  string `toml:"token_file"`
 	PolicyFile string `toml:"policy_file"` // pre-trade guardrails (internal/policy)
+	CAFile     string `toml:"ca_file"`     // custom CA bundle (PEM), e.g. the Russian Trusted Sub CA
 }
 
 // TokenError marks token-resolution failures so the CLI can map them to the
@@ -118,6 +121,11 @@ func Load(flags Flags) (Settings, error) {
 		return Settings{}, err
 	}
 
+	caFile, err := resolveCAFile(profile.CAFile)
+	if err != nil {
+		return Settings{}, err
+	}
+
 	return Settings{
 		Profile:    name,
 		Endpoint:   endpoint,
@@ -126,6 +134,7 @@ func Load(flags Flags) (Settings, error) {
 		Token:      token,
 		Timeout:    flags.Timeout,
 		PolicyFile: profile.PolicyFile,
+		CAFile:     caFile,
 	}, nil
 }
 
@@ -180,12 +189,9 @@ func resolveToken(flagFile, profileFile string) (string, error) {
 }
 
 func readToken(path string) (string, error) {
-	if strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", &TokenError{fmt.Errorf("resolve home directory: %w", err)}
-		}
-		path = filepath.Join(home, path[2:])
+	path, err := expandHome(path)
+	if err != nil {
+		return "", &TokenError{err}
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -196,6 +202,31 @@ func readToken(path string) (string, error) {
 		return "", &TokenError{fmt.Errorf("token file %s is empty", path)}
 	}
 	return token, nil
+}
+
+// resolveCAFile follows plan §14: TINVEST_CA_FILE env wins over the profile's
+// ca_file. Only the path is resolved here (with ~ expansion); the transport
+// layer is responsible for reading and parsing the PEM bundle, since that is
+// where the resulting cert pool is actually used.
+func resolveCAFile(profileCAFile string) (string, error) {
+	path := firstNonEmpty(strings.TrimSpace(os.Getenv(EnvCAFile)), profileCAFile)
+	if path == "" {
+		return "", nil
+	}
+	return expandHome(path)
+}
+
+// expandHome resolves a leading "~/" to the user's home directory. Paths
+// without that prefix are returned unchanged.
+func expandHome(path string) (string, error) {
+	if !strings.HasPrefix(path, "~/") {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	return filepath.Join(home, path[2:]), nil
 }
 
 func firstNonEmpty(values ...string) string {

@@ -2,8 +2,18 @@ package transport
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
+	"math/big"
 	"net"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -302,5 +312,204 @@ func TestRetryPolicyNilLeavesRetryDisabled(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Errorf("calls = %d, want 1 (no RetryPolicy set)", got)
+	}
+}
+
+// --- Custom CA bundle (plan §14): a self-signed test root CA + server cert,
+// generated at runtime, standing in for the Russian Trusted Root/Sub CA. ---
+
+// testCA holds a freshly minted self-signed root CA and a server certificate
+// it issued, all in PEM form for use by the test TLS listener and by CAFile.
+type testCA struct {
+	rootPEM []byte
+	certPEM []byte
+	keyPEM  []byte
+}
+
+// generateTestCA builds a throwaway root CA and a server certificate signed
+// by it, valid for 127.0.0.1. This stands in for a real trust chain (e.g.
+// the Russian Trusted Root CA + Sub CA) without depending on any external
+// certificate authority.
+func generateTestCA(t *testing.T) testCA {
+	t.Helper()
+
+	rootKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate root key: %v", err)
+	}
+	rootTemplate := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "tinvest-test Root CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	rootDER, err := x509.CreateCertificate(rand.Reader, rootTemplate, rootTemplate, &rootKey.PublicKey, rootKey)
+	if err != nil {
+		t.Fatalf("create root cert: %v", err)
+	}
+	rootCert, err := x509.ParseCertificate(rootDER)
+	if err != nil {
+		t.Fatalf("parse root cert: %v", err)
+	}
+
+	serverKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate server key: %v", err)
+	}
+	serverTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "127.0.0.1"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	serverDER, err := x509.CreateCertificate(rand.Reader, serverTemplate, rootCert, &serverKey.PublicKey, rootKey)
+	if err != nil {
+		t.Fatalf("create server cert: %v", err)
+	}
+	serverKeyDER, err := x509.MarshalECPrivateKey(serverKey)
+	if err != nil {
+		t.Fatalf("marshal server key: %v", err)
+	}
+
+	return testCA{
+		rootPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: rootDER}),
+		certPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: serverDER}),
+		keyPEM:  pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: serverKeyDER}),
+	}
+}
+
+// writeCAFile writes the root CA PEM to a temp file and returns its path.
+func writeCAFile(t *testing.T, pemBytes []byte) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
+		t.Fatalf("write CA file: %v", err)
+	}
+	return path
+}
+
+// startTLSServer starts a real TLS-terminated gRPC server on 127.0.0.1
+// presenting the given server certificate, and returns its address.
+func startTLSServer(t *testing.T, f *fakeUsers, ca testCA) string {
+	t.Helper()
+	cert, err := tls.X509KeyPair(ca.certPEM, ca.keyPEM)
+	if err != nil {
+		t.Fatalf("load server keypair: %v", err)
+	}
+	rawLis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	tlsLis := tls.NewListener(rawLis, &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		NextProtos:   []string{"h2"}, // ALPN: grpc-go 1.67+ enforces this (see grpc/grpc-go#434)
+	})
+	srv := grpc.NewServer()
+	investapi.RegisterUsersServiceServer(srv, f)
+	go func() { _ = srv.Serve(tlsLis) }()
+	t.Cleanup(srv.Stop)
+	return rawLis.Addr().String()
+}
+
+// TestCustomCAPoolAllowsConnection proves that a connection succeeds against
+// a server presenting a certificate signed by an otherwise-untrusted root,
+// once that root is supplied via Config.CAFile.
+func TestCustomCAPoolAllowsConnection(t *testing.T) {
+	ca := generateTestCA(t)
+	fake := &fakeUsers{}
+	addr := startTLSServer(t, fake, ca)
+	caFile := writeCAFile(t, ca.rootPEM)
+
+	conn, err := Dial(context.Background(), Config{Endpoint: addr, Token: "t", CAFile: caFile})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	ctx, info := WithCallInfo(context.Background())
+	if _, err := investapi.NewUsersServiceClient(conn).GetAccounts(ctx, &investapi.GetAccountsRequest{}); err != nil {
+		t.Fatalf("GetAccounts with custom CA pool: %v", err)
+	}
+	if info.Phase() != PhaseConfirmed {
+		t.Errorf("phase = %s, want confirmed", info.Phase())
+	}
+}
+
+// TestWithoutCustomCAPoolFailsCleanly proves the system pool is still what's
+// used when CAFile is unset — a self-signed test root must not be trusted.
+func TestWithoutCustomCAPoolFailsCleanly(t *testing.T) {
+	ca := generateTestCA(t)
+	fake := &fakeUsers{}
+	addr := startTLSServer(t, fake, ca)
+
+	conn, err := Dial(context.Background(), Config{Endpoint: addr, Token: "t"})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	ctx, _ := WithCallInfo(context.Background())
+	_, err = investapi.NewUsersServiceClient(conn).GetAccounts(ctx, &investapi.GetAccountsRequest{})
+	if err == nil {
+		t.Fatal("want error: self-signed server cert must not be trusted without CAFile")
+	}
+}
+
+// TestGarbageCAFileFailsAtDial proves an unparseable CA bundle fails fast,
+// synchronously in Dial, with a plain config-shaped error (never silently
+// falling back to no verification).
+func TestGarbageCAFileFailsAtDial(t *testing.T) {
+	caFile := filepath.Join(t.TempDir(), "garbage.pem")
+	if err := os.WriteFile(caFile, []byte("this is not a PEM certificate"), 0o600); err != nil {
+		t.Fatalf("write garbage CA file: %v", err)
+	}
+
+	_, err := Dial(context.Background(), Config{Endpoint: "127.0.0.1:0", Token: "t", CAFile: caFile})
+	if err == nil {
+		t.Fatal("want error for unparseable CA file")
+	}
+}
+
+// TestEmptyCAFileFailsAtDial proves an empty CA bundle is rejected rather
+// than silently producing an empty (trust-nothing, or worse, ambiguous) pool.
+func TestEmptyCAFileFailsAtDial(t *testing.T) {
+	caFile := filepath.Join(t.TempDir(), "empty.pem")
+	if err := os.WriteFile(caFile, []byte(""), 0o600); err != nil {
+		t.Fatalf("write empty CA file: %v", err)
+	}
+
+	_, err := Dial(context.Background(), Config{Endpoint: "127.0.0.1:0", Token: "t", CAFile: caFile})
+	if err == nil {
+		t.Fatal("want error for empty CA file")
+	}
+}
+
+// TestMissingCAFileFailsAtDial proves a nonexistent path is a clean error,
+// not a panic or a silent fallback to the system pool.
+func TestMissingCAFileFailsAtDial(t *testing.T) {
+	_, err := Dial(context.Background(), Config{Endpoint: "127.0.0.1:0", Token: "t", CAFile: "/nonexistent/ca.pem"})
+	if err == nil {
+		t.Fatal("want error for missing CA file")
+	}
+}
+
+// TestCAFileIgnoredWhenCredentialsSet proves an explicit Credentials
+// override takes precedence over CAFile, matching the documented contract.
+func TestCAFileIgnoredWhenCredentialsSet(t *testing.T) {
+	fake := &fakeUsers{}
+	lis := startServer(t, fake)
+	// A garbage CAFile would fail Dial if it were consulted; it must not be,
+	// since Credentials (insecure, set by dialBuf) takes precedence.
+	conn := dialBuf(t, lis, Config{Token: "t", CAFile: "/nonexistent/ca.pem"})
+
+	ctx, _ := WithCallInfo(context.Background())
+	if _, err := investapi.NewUsersServiceClient(conn).GetAccounts(ctx, &investapi.GetAccountsRequest{}); err != nil {
+		t.Fatalf("GetAccounts: %v", err)
 	}
 }

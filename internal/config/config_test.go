@@ -12,7 +12,7 @@ import (
 // clearEnv removes ambient tinvest settings so tests are hermetic.
 func clearEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{EnvToken, EnvProfile, EnvOutput} {
+	for _, key := range []string{EnvToken, EnvProfile, EnvOutput, EnvCAFile} {
 		t.Setenv(key, "")
 		if err := os.Unsetenv(key); err != nil {
 			t.Fatal(err)
@@ -254,6 +254,66 @@ func TestConfigParseErrorFails(t *testing.T) {
 
 	if _, err := Load(Flags{}); err == nil {
 		t.Fatal("want parse error")
+	}
+}
+
+func TestCAFileUnsetByDefault(t *testing.T) {
+	clearEnv(t)
+	writeConfig(t, "")
+
+	s, err := Load(Flags{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.CAFile != "" {
+		t.Errorf("CAFile = %q, want empty (system trust store)", s.CAFile)
+	}
+}
+
+func TestCAFileFromProfile(t *testing.T) {
+	clearEnv(t)
+	writeConfig(t, "[profiles.main]\nca_file = \"/etc/tinvest/russian-trusted-ca.pem\"\n")
+
+	s, err := Load(Flags{Profile: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.CAFile != "/etc/tinvest/russian-trusted-ca.pem" {
+		t.Errorf("CAFile = %q, want profile ca_file", s.CAFile)
+	}
+}
+
+func TestCAFilePrecedenceEnvOverProfile(t *testing.T) {
+	clearEnv(t)
+	writeConfig(t, "[profiles.main]\nca_file = \"/from/profile.pem\"\n")
+	t.Setenv(EnvCAFile, "/from/env.pem")
+
+	s, err := Load(Flags{Profile: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.CAFile != "/from/env.pem" {
+		t.Errorf("CAFile = %q, want env ca_file (env wins over profile)", s.CAFile)
+	}
+}
+
+func TestCAFileTildeExpansion(t *testing.T) {
+	clearEnv(t)
+	writeConfig(t, "")
+	t.Setenv(EnvCAFile, "~/certs/russian-trusted-ca.pem")
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory available")
+	}
+
+	s, err := Load(Flags{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, "certs", "russian-trusted-ca.pem")
+	if s.CAFile != want {
+		t.Errorf("CAFile = %q, want %q (~ expanded)", s.CAFile, want)
 	}
 }
 
