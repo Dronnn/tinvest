@@ -64,9 +64,16 @@ func newFakeServer(t *testing.T) *fakeServer {
 	return f
 }
 
-// endpoint is the host:port to write into the profile. "localhost" (not the
-// numeric loopback) is used so the TLS ServerName matches the leaf's DNS SAN.
-func (f *fakeServer) endpoint() string { return "localhost:" + f.port }
+// endpoint is the host:port to write into the profile. It reports the numeric
+// loopback the listener actually binds (127.0.0.1), never "localhost". On macOS
+// "localhost" resolves to [::1, 127.0.0.1] with IPv6 first, but the fake listens
+// on 127.0.0.1 (IPv4) only, so a "localhost" target makes gRPC attempt ::1 first
+// and fail over — measurably slow locally (tens of ms vs ~1ms), and on an
+// IPv6-filtered or CPU-starved CI runner the ::1 attempt can hang all the way to
+// the 10s per-call deadline (exit 6, NETWORK). A numeric IP target skips DNS and
+// the dual-stack race entirely; TLS still verifies because the leaf carries a
+// 127.0.0.1 IP SAN.
+func (f *fakeServer) endpoint() string { return "127.0.0.1:" + f.port }
 
 // GetInstrumentBy echoes the requested id back as a fully-formed instrument so
 // resolution, the resolved-policy checks, and the price-increment check all
