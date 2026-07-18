@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: build-test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+
+      - name: make build
+        run: make build
+
+      - name: make vet
+        run: make vet
+
+      - name: make test
+        run: make test
+
+      - name: go test -race
+        run: go test -race ./...
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+
+      # Runs the exact same pinned `go run golangci-lint@<version>` command
+      # defined in the Makefile, so the linter version has a single source
+      # of truth and cannot drift between local runs and CI.
+      - name: make lint
+        run: make lint
+
+  proto-check:
+    name: proto-check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+
+      - name: Regenerate protobuf code
+        run: make proto
+
+      # Fails the job if `make proto` produced a diff, proving the checked-in
+      # generated code in internal/pb/investapi is in sync with the vendored
+      # protos in proto/.
+      - name: Verify generated code is in sync
+        run: git diff --exit-code -- internal/pb

@@ -43,3 +43,16 @@ tidy:
 
 clean:
 	rm -rf internal/pb/investapi
+
+# Pinned goreleaser version, matched to .github/workflows/release.yml.
+GORELEASER_VERSION := v2.17.0
+
+.PHONY: release-check release-snapshot
+
+# Validate .goreleaser.yaml without building or publishing anything.
+release-check:
+	go run github.com/goreleaser/goreleaser/v2@$(GORELEASER_VERSION) check
+
+# Local dry-run build of all release artifacts (no publishing, no tag needed).
+release-snapshot:
+	go run github.com/goreleaser/goreleaser/v2@$(GORELEASER_VERSION) release --snapshot --clean

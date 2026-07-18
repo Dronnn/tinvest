@@ -1,0 +1,100 @@
+# Advisory contract-drift check.
+#
+# This workflow intentionally does NOT trigger on `push` or `pull_request`.
+# Because it never runs against a commit/PR ref, it can never attach as a
+# commit status or PR check, so it structurally cannot gate merges or mark
+# a commit red — that's what keeps it "non-required" rather than relying
+# solely on `continue-on-error`. `continue-on-error` is layered on top,
+# purely so a drift finding still shows up as a visible (yellow) warning
+# instead of silently vanishing.
+name: Contract drift (advisory)
+
+on:
+  schedule:
+    # Monday 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch: {}
+
+jobs:
+  proto-drift:
+    name: proto-drift (advisory, non-blocking)
+    runs-on: ubuntu-latest
+    # Belt-and-suspenders: even if this job's steps fail, the job (and thus
+    # the workflow) reports success so it never shows as a hard failure.
+    # The findings themselves are still surfaced via ::warning:: annotations
+    # and the job summary below.
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+
+      - name: Fetch current upstream protos
+        run: |
+          set -euo pipefail
+          PROJECT="invest%2Finvest-contracts"
+          API="https://opensource.tbank.ru/api/v4/projects/$PROJECT"
+
+          REF=$(curl -fsSL "$API" | python3 -c 'import json,sys; print(json.load(sys.stdin)["default_branch"])')
+          echo "REF=$REF" >> "$GITHUB_ENV"
+
+          DEST="$RUNNER_TEMP/upstream-protos"
+          mkdir -p "$DEST/google/api"
+          echo "DEST=$DEST" >> "$GITHUB_ENV"
+
+          FILES="common.proto instruments.proto marketdata.proto operations.proto orders.proto stoporders.proto sandbox.proto users.proto signals.proto google/api/field_behavior.proto"
+          for f in $FILES; do
+            ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote('src/docs/contracts/'+sys.argv[1], safe=''))" "$f")
+            curl -fsSL "$API/repository/files/$ENC/raw?ref=$REF" -o "$DEST/$f"
+          done
+
+      - name: Textual diff summary (vendored vs upstream)
+        run: |
+          set +e
+          FILES="common.proto instruments.proto marketdata.proto operations.proto orders.proto stoporders.proto sandbox.proto users.proto signals.proto google/api/field_behavior.proto"
+          {
+            echo "## Vendored vs upstream ($REF) proto diff"
+            echo
+            any_diff=0
+            for f in $FILES; do
+              if ! diff -q "proto/$f" "$DEST/$f" > /dev/null 2>&1; then
+                any_diff=1
+                echo "### $f differs"
+                echo '```diff'
+                diff -u "proto/$f" "$DEST/$f"
+                echo '```'
+              fi
+            done
+            if [ "$any_diff" -eq 0 ]; then
+              echo "No textual differences from upstream $REF."
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: buf breaking (upstream vs vendored baseline)
+        id: breaking
+        continue-on-error: true
+        run: |
+          set +e
+          go run github.com/bufbuild/buf/cmd/buf@v1.72.0 breaking "$DEST" --against proto 2>&1 | tee "$RUNNER_TEMP/breaking.log"
+          status="${PIPESTATUS[0]}"
+          {
+            echo "## buf breaking report (upstream $REF vs vendored proto/)"
+            echo '```'
+            cat "$RUNNER_TEMP/breaking.log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Warn on drift
+        if: steps.breaking.outputs.status != '0'
+        run: |
+          echo "::warning title=Contract drift detected::Upstream T-Invest contracts ($REF) differ from vendored proto/, including possible breaking changes per 'buf breaking'. See the job summary for the full diff and buf report. Advisory only — does not fail CI. Re-vendor via proto/VERSION.md's process if appropriate."
+
+      - name: No drift
+        if: steps.breaking.outputs.status == '0'
+        run: echo "No breaking changes detected between vendored contracts and upstream $REF."
