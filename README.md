@@ -26,7 +26,8 @@ T-Bank's API endpoints present certificates chained to the **Russian Trusted Sub
 2. Concatenate both into a single bundle file, e.g.:
    ```sh
    mkdir -p ~/.config/tinvest
-   cat russian_trusted_root_ca.pem russian_trusted_sub_ca.pem > ~/.config/tinvest/russian-trusted-ca.pem
+   # ensure a newline separates the two certificates (the downloads lack a trailing newline)
+   { cat russian_trusted_root_ca.pem; echo; cat russian_trusted_sub_ca.pem; echo; } | tr -d '\r' > ~/.config/tinvest/russian-trusted-ca.pem
    ```
 3. Point `tinvest` at it, either in the profile:
    ```toml

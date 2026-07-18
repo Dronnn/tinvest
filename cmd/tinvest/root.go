@@ -98,6 +98,7 @@ func (a *app) connect(ctx context.Context, settings config.Settings) (*grpc.Clie
 		Endpoint:    settings.Endpoint,
 		Token:       settings.Token,
 		Timeout:     settings.Timeout,
+		CAFile:      settings.CAFile,
 		RetryPolicy: &policy,
 	})
 	if err != nil {
