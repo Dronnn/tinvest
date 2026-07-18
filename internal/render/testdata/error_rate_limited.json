@@ -1,0 +1,20 @@
+{
+  "ok": false,
+  "error": {
+    "code": "RATE_LIMITED",
+    "grpc_code": "RESOURCE_EXHAUSTED",
+    "api_code": "80002",
+    "message": "Request limit exceeded",
+    "retryable": true,
+    "retry_after_ms": 5000,
+    "phase": "confirmed",
+    "tracking_id": "trk-0f9a"
+  },
+  "meta": {
+    "account_id": "2001234567",
+    "tracking_id": "trk-0f9a",
+    "elapsed_ms": 123,
+    "contract": "1.49",
+    "schema_version": "0.1"
+  }
+}

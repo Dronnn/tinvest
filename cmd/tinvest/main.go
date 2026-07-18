@@ -2,8 +2,8 @@
 // adapter for the T-Bank Invest gRPC API.
 package main
 
-import "fmt"
+import "os"
 
 func main() {
-	fmt.Println("tinvest")
+	os.Exit(execute())
 }

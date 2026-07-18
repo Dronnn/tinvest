@@ -1,0 +1,13 @@
+{
+  "ok": false,
+  "error": {
+    "code": "AUTH",
+    "message": "no token configured: set TINVEST_TOKEN, use --token-file, or configure token_file in a profile",
+    "retryable": false
+  },
+  "meta": {
+    "elapsed_ms": 0,
+    "contract": "1.49",
+    "schema_version": "0.1"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "ok": false,
+  "error": {
+    "code": "BROKER_REJECTED",
+    "grpc_code": "INVALID_ARGUMENT",
+    "api_code": "30001",
+    "message": "Invalid parameter value",
+    "retryable": false,
+    "phase": "confirmed",
+    "tracking_id": "trk-0f9a"
+  },
+  "meta": {
+    "account_id": "2001234567",
+    "tracking_id": "trk-0f9a",
+    "elapsed_ms": 123,
+    "contract": "1.49",
+    "schema_version": "0.1"
+  }
+}

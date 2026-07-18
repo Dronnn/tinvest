@@ -30,10 +30,30 @@ make proto     # regenerate gRPC stubs from vendored protos
 The command surface is under active development. Currently available:
 
 ```sh
-tinvest version         # CLI version + pinned contract version
+tinvest version         # CLI version, pinned contract version, schema version
+tinvest token check     # validate the token; report user info, accounts, access levels
+tinvest accounts list   # list accounts visible to the token
 ```
 
-Planned command groups: `accounts`, `portfolio`, `positions`, `balance`, `instruments`, `quotes`, `orderbook`, `candles`, `orders`, `stop-orders`, `operations`, `stream`, `sandbox`, `token`.
+Global flags: `--profile <name>` (config profile), `--account <id>`, `-o json|table`, `--token-file <path>`, `--timeout <duration>` (per-call deadline, default 10s), `--sandbox` (shortcut for the sandbox endpoint).
+
+Output is a uniform JSON envelope (`{"ok":…,"data":…,"meta":{…}}`) with a stable `schema_version`; errors carry a machine-readable classification and map to a fixed exit-code contract (`0` ok, `1` internal, `2` usage, `3` auth, `4` rate-limited, `5` rejected by broker, `6` network/timeout, `7` mutation sent but unconfirmed). JSON is the default when stdout is not a terminal; `-o` or `TINVEST_OUTPUT` overrides unconditionally.
+
+Configuration profiles live in `~/.config/tinvest/config.toml` (`XDG_CONFIG_HOME` respected):
+
+```toml
+default_profile = "main"
+
+[profiles.main]
+endpoint = "prod"        # "prod", "sandbox", or host:port
+account_id = "…"
+output = "json"
+token_file = "~/.config/tinvest/token"
+```
+
+Token resolution order: `--token-file` flag, then `TINVEST_TOKEN`, then the profile's `token_file`.
+
+Planned command groups: `portfolio`, `positions`, `balance`, `instruments`, `quotes`, `orderbook`, `candles`, `orders`, `stop-orders`, `operations`, `stream`, `sandbox`.
 
 ## Disclaimer
 

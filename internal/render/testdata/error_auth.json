@@ -1,0 +1,19 @@
+{
+  "ok": false,
+  "error": {
+    "code": "AUTH",
+    "grpc_code": "UNAUTHENTICATED",
+    "api_code": "40003",
+    "message": "Token is invalid or expired",
+    "retryable": false,
+    "phase": "confirmed",
+    "tracking_id": "trk-0f9a"
+  },
+  "meta": {
+    "account_id": "2001234567",
+    "tracking_id": "trk-0f9a",
+    "elapsed_ms": 123,
+    "contract": "1.49",
+    "schema_version": "0.1"
+  }
+}
