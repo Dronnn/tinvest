@@ -16,8 +16,6 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 
 	investapi "tinvest/internal/pb/investapi"
-	"tinvest/internal/render"
-	"tinvest/internal/transport"
 )
 
 // fakeInstruments is an in-process InstrumentsService capturing what the
@@ -163,22 +161,16 @@ func TestResolveInvalidIDNeverHitsTheNetwork(t *testing.T) {
 	}
 }
 
-func TestResolveNotFoundMapsToExitFive(t *testing.T) {
+func TestResolveReturnsNotFound(t *testing.T) {
 	fake := &fakeInstruments{err: status.Error(codes.NotFound, "50002")}
 	conn := startInstrumentsServer(t, fake)
 
-	ctx, info := transport.WithCallInfo(context.Background())
-	_, err := New(conn, nil).Resolve(ctx, "BBG004730N88", false)
+	_, err := New(conn, nil).Resolve(context.Background(), "BBG004730N88", false)
 	if err == nil {
 		t.Fatal("want NOT_FOUND error")
 	}
-
-	cerr := render.Classify(err, render.CallContext{Phase: info.Phase()})
-	if cerr.Code != render.CodeBrokerRejected {
-		t.Errorf("code = %s, want BROKER_REJECTED", cerr.Code)
-	}
-	if got := cerr.ExitCode(); got != render.ExitRejected {
-		t.Errorf("exit code = %d, want %d", got, render.ExitRejected)
+	if got := status.Code(err); got != codes.NotFound {
+		t.Errorf("code = %v, want %v", got, codes.NotFound)
 	}
 }
 

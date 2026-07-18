@@ -10,7 +10,9 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
+	investapi "tinvest/internal/pb/investapi"
 	"tinvest/internal/transport"
 )
 
@@ -55,6 +57,37 @@ func TestEnvelopeGoldenSuccess(t *testing.T) {
 		}},
 	}
 	checkGolden(t, "success.json", Success(data, fixedMeta()))
+}
+
+func TestEnvelopeGoldenPortfolio(t *testing.T) {
+	data := struct {
+		Portfolio PortfolioView `json:"portfolio"`
+	}{
+		Portfolio: Portfolio(&investapi.PortfolioResponse{
+			AccountId:             "2001234567",
+			TotalAmountPortfolio:  &investapi.MoneyValue{Currency: "rub", Units: 100000, Nano: 500000000},
+			TotalAmountShares:     &investapi.MoneyValue{Currency: "rub", Units: 90000},
+			TotalAmountCurrencies: &investapi.MoneyValue{Currency: "rub", Units: 10000, Nano: 500000000},
+			ExpectedYield:         &investapi.Quotation{Units: 12, Nano: 340000000},
+			Positions: []*investapi.PortfolioPosition{{
+				InstrumentUid:    "uid-sber",
+				Figi:             "BBG004730N88",
+				Ticker:           "SBER",
+				ClassCode:        "TQBR",
+				InstrumentType:   "share",
+				Quantity:         &investapi.Quotation{Units: 10},
+				CurrentPrice:     &investapi.MoneyValue{Currency: "rub", Units: 300},
+				ExpectedYield:    &investapi.Quotation{Units: 5},
+				VarMarginSettled: &investapi.MoneyValue{Currency: "rub", Units: 2},
+			}},
+			VirtualPositions: []*investapi.VirtualPortfolioPosition{{
+				InstrumentUid: "uid-virtual", Ticker: "GIFT", InstrumentType: "share",
+				Quantity:   &investapi.Quotation{Units: 1},
+				ExpireDate: timestamppb.New(time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)),
+			}},
+		}),
+	}
+	checkGolden(t, "portfolio.json", Success(data, fixedMeta()))
 }
 
 func TestEnvelopeGoldenErrors(t *testing.T) {

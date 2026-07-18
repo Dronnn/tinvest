@@ -23,3 +23,13 @@ func New(cc grpc.ClientConnInterface) Client {
 func (c Client) Info(ctx context.Context) (*investapi.GetInfoResponse, error) {
 	return c.api.GetInfo(ctx, &investapi.GetInfoRequest{})
 }
+
+// Tariff returns the token's unary and stream limits as structured data.
+func (c Client) Tariff(ctx context.Context) (*investapi.GetUserTariffResponse, error) {
+	return c.api.GetUserTariff(ctx, &investapi.GetUserTariffRequest{})
+}
+
+// Margin returns margin attributes for one account.
+func (c Client) Margin(ctx context.Context, accountID string) (*investapi.GetMarginAttributesResponse, error) {
+	return c.api.GetMarginAttributes(ctx, &investapi.GetMarginAttributesRequest{AccountId: accountID})
+}

@@ -1,0 +1,192 @@
+{
+  "ok": true,
+  "data": {
+    "portfolio": {
+      "account_id": "2001234567",
+      "total_amount_portfolio": {
+        "units": "100000",
+        "nano": 500000000,
+        "value": "100000.5",
+        "currency": "rub"
+      },
+      "total_amount_shares": {
+        "units": "90000",
+        "nano": 0,
+        "value": "90000",
+        "currency": "rub"
+      },
+      "total_amount_bonds": {
+        "units": "0",
+        "nano": 0,
+        "value": "0"
+      },
+      "total_amount_etf": {
+        "units": "0",
+        "nano": 0,
+        "value": "0"
+      },
+      "total_amount_currencies": {
+        "units": "10000",
+        "nano": 500000000,
+        "value": "10000.5",
+        "currency": "rub"
+      },
+      "total_amount_futures": {
+        "units": "0",
+        "nano": 0,
+        "value": "0"
+      },
+      "total_amount_options": {
+        "units": "0",
+        "nano": 0,
+        "value": "0"
+      },
+      "total_amount_sp": {
+        "units": "0",
+        "nano": 0,
+        "value": "0"
+      },
+      "total_amount_dfa": {
+        "units": "0",
+        "nano": 0,
+        "value": "0"
+      },
+      "expected_yield": {
+        "units": "12",
+        "nano": 340000000,
+        "value": "12.34"
+      },
+      "daily_yield": {
+        "units": "0",
+        "nano": 0,
+        "value": "0"
+      },
+      "daily_yield_relative": {
+        "units": "0",
+        "nano": 0,
+        "value": "0"
+      },
+      "positions": [
+        {
+          "instrument_uid": "uid-sber",
+          "position_uid": "",
+          "figi": "BBG004730N88",
+          "ticker": "SBER",
+          "class_code": "TQBR",
+          "instrument_type": "share",
+          "quantity": {
+            "units": "10",
+            "nano": 0,
+            "value": "10"
+          },
+          "average_position_price": {
+            "units": "0",
+            "nano": 0,
+            "value": "0"
+          },
+          "average_position_price_fifo": {
+            "units": "0",
+            "nano": 0,
+            "value": "0"
+          },
+          "current_price": {
+            "units": "300",
+            "nano": 0,
+            "value": "300",
+            "currency": "rub"
+          },
+          "expected_yield": {
+            "units": "5",
+            "nano": 0,
+            "value": "5"
+          },
+          "expected_yield_fifo": {
+            "units": "0",
+            "nano": 0,
+            "value": "0"
+          },
+          "daily_yield": {
+            "units": "0",
+            "nano": 0,
+            "value": "0"
+          },
+          "current_accrued_interest": {
+            "units": "0",
+            "nano": 0,
+            "value": "0"
+          },
+          "blocked": false,
+          "blocked_lots": {
+            "units": "0",
+            "nano": 0,
+            "value": "0"
+          },
+          "variation_margin": {
+            "units": "0",
+            "nano": 0,
+            "value": "0"
+          },
+          "variation_margin_settled": {
+            "units": "2",
+            "nano": 0,
+            "value": "2",
+            "currency": "rub"
+          }
+        }
+      ],
+      "virtual_positions": [
+        {
+          "instrument_uid": "uid-virtual",
+          "position_uid": "",
+          "figi": "",
+          "ticker": "GIFT",
+          "class_code": "",
+          "instrument_type": "share",
+          "quantity": {
+            "units": "1",
+            "nano": 0,
+            "value": "1"
+          },
+          "average_position_price": {
+            "units": "0",
+            "nano": 0,
+            "value": "0"
+          },
+          "average_position_price_fifo": {
+            "units": "0",
+            "nano": 0,
+            "value": "0"
+          },
+          "current_price": {
+            "units": "0",
+            "nano": 0,
+            "value": "0"
+          },
+          "expected_yield": {
+            "units": "0",
+            "nano": 0,
+            "value": "0"
+          },
+          "expected_yield_fifo": {
+            "units": "0",
+            "nano": 0,
+            "value": "0"
+          },
+          "daily_yield": {
+            "units": "0",
+            "nano": 0,
+            "value": "0"
+          },
+          "expire_date": "2026-12-31T00:00:00Z"
+        }
+      ]
+    }
+  },
+  "meta": {
+    "account_id": "2001234567",
+    "tracking_id": "trk-0f9a",
+    "elapsed_ms": 123,
+    "contract": "1.49",
+    "schema_version": "0.1"
+  }
+}

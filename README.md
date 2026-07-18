@@ -61,6 +61,14 @@ tinvest accounts list   # list accounts visible to the token
 tinvest instruments …   # search / get / list instruments
 tinvest quotes last …   # last / close prices
 tinvest orderbook get … # market depth
+tinvest portfolio get   # portfolio totals, yield, and holdings
+tinvest positions get   # money, securities, futures, options, and blocked amounts
+tinvest balance get     # withdraw limits summarized by currency
+tinvest operations list # cursor-paginated operations; --all follows every page
+tinvest trades list     # executed trades flattened from operations
+tinvest candles …       # auto-windowed candles / authenticated yearly zip download
+tinvest user …          # tariff limits / account margin attributes
+tinvest signals …       # signal strategies / signals
 tinvest orders …        # place / list / cancel / replace / wait / reconcile
 tinvest stop-orders …   # take-profit / stop-loss / stop-limit, never auto-retried
 tinvest sandbox …       # sandbox account open / close / accounts / topup
@@ -160,6 +168,31 @@ tinvest sandbox accounts
 tinvest sandbox topup --account <id> --amount 10000 [--currency rub]
 ```
 
+### Read-only breadth
+
+Times are RFC 3339. Instrument arguments accept UID, FIGI, or
+`TICKER@CLASSCODE` and are resolved to UID before the data call.
+
+```sh
+tinvest portfolio get --account <id>
+tinvest positions get --account <id>
+tinvest balance get --account <id>
+tinvest operations list --account <id> --from 2026-01-01T00:00:00Z --to 2026-02-01T00:00:00Z --limit 250 --all
+tinvest trades list --account <id> --instrument SBER@TQBR --all
+tinvest instruments list --type share
+tinvest instruments dividends SBER@TQBR --from 2026-01-01T00:00:00Z --to 2027-01-01T00:00:00Z
+tinvest instruments coupons <bond-uid> --from 2026-01-01T00:00:00Z --to 2027-01-01T00:00:00Z
+tinvest instruments accrued-interest <bond-uid> --from 2026-01-01T00:00:00Z --to 2026-02-01T00:00:00Z
+tinvest instruments schedules --exchange MOEX --from 2026-01-01T00:00:00Z --to 2026-01-08T00:00:00Z
+tinvest instruments trading-status SBER@TQBR
+tinvest candles get SBER@TQBR --interval 1h --from 2026-01-01T00:00:00Z --to 2026-07-01T00:00:00Z
+tinvest candles download SBER@TQBR --year 2025 --out ./history
+tinvest user tariff
+tinvest user margin --account <id>
+tinvest signals strategies
+tinvest signals list --strategy <strategy-id>
+```
+
 Global flags: `--profile <name>` (config profile), `--account <id>`, `-o json|table`, `--token-file <path>`, `--timeout <duration>` (per-call deadline, default 10s), `--sandbox` (shortcut for the sandbox endpoint).
 
 Output is a uniform JSON envelope (`{"ok":…,"data":…,"meta":{…}}`) with a stable `schema_version`; errors carry a machine-readable classification and map to a fixed exit-code contract (`0` ok, `1` internal, `2` usage, `3` auth, `4` rate-limited, `5` rejected by broker, `6` network/timeout, `7` mutation sent but unconfirmed). JSON is the default when stdout is not a terminal; `-o` or `TINVEST_OUTPUT` overrides unconditionally.
@@ -179,7 +212,7 @@ policy_file = "~/.config/tinvest/policy.toml"   # optional pre-trade guardrails
 
 Token resolution order: `--token-file` flag, then `TINVEST_TOKEN`, then the profile's `token_file`.
 
-Planned command groups: `portfolio`, `positions`, `balance`, `candles`, `operations`, `stream`.
+Planned command group: `stream`.
 
 ## Disclaimer
 

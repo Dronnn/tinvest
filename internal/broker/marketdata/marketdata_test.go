@@ -5,6 +5,7 @@ import (
 	"net"
 	"sync"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -37,6 +38,10 @@ type fakeMarketData struct {
 
 	gotTradingStatusID string
 	tradingStatusResp  *investapi.GetTradingStatusResponse
+
+	gotCandleReqs []*investapi.GetCandlesRequest
+	candlesResp   []*investapi.HistoricCandle
+	candlesErr    error
 }
 
 func (f *fakeMarketData) GetLastPrices(_ context.Context, req *investapi.GetLastPricesRequest) (*investapi.GetLastPricesResponse, error) {
@@ -73,6 +78,16 @@ func (f *fakeMarketData) GetTradingStatus(_ context.Context, req *investapi.GetT
 	defer f.mu.Unlock()
 	f.gotTradingStatusID = req.GetInstrumentId()
 	return f.tradingStatusResp, nil
+}
+
+func (f *fakeMarketData) GetCandles(_ context.Context, req *investapi.GetCandlesRequest) (*investapi.GetCandlesResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.gotCandleReqs = append(f.gotCandleReqs, req)
+	if f.candlesErr != nil {
+		return nil, f.candlesErr
+	}
+	return &investapi.GetCandlesResponse{Candles: f.candlesResp}, nil
 }
 
 func startMarketDataServer(t *testing.T, f *fakeMarketData) *grpc.ClientConn {
@@ -242,5 +257,108 @@ func TestTradingStatusHappyPath(t *testing.T) {
 	defer fake.mu.Unlock()
 	if fake.gotTradingStatusID != "uid-1" {
 		t.Errorf("instrument_id = %q, want uid-1", fake.gotTradingStatusID)
+	}
+}
+
+func TestCandleWindowsRespectIntervalCaps(t *testing.T) {
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := from.Add(50 * time.Hour)
+	windows, err := CandleWindows(from, to, investapi.CandleInterval_CANDLE_INTERVAL_1_MIN)
+	if err != nil {
+		t.Fatalf("CandleWindows: %v", err)
+	}
+	if len(windows) != 3 {
+		t.Fatalf("windows = %+v, want 3", windows)
+	}
+	for i, window := range windows {
+		if window.To.Sub(window.From) > 24*time.Hour {
+			t.Errorf("window %d spans %s", i, window.To.Sub(window.From))
+		}
+		if i > 0 && !windows[i-1].To.Equal(window.From) {
+			t.Errorf("windows %d and %d are not contiguous", i-1, i)
+		}
+	}
+	if !windows[0].From.Equal(from) || !windows[len(windows)-1].To.Equal(to) {
+		t.Errorf("window coverage = %+v", windows)
+	}
+
+	monthlyTo := from.AddDate(26, 0, 0)
+	monthly, err := CandleWindows(from, monthlyTo, investapi.CandleInterval_CANDLE_INTERVAL_MONTH)
+	if err != nil {
+		t.Fatalf("monthly windows: %v", err)
+	}
+	if len(monthly) != 3 || !monthly[0].To.Equal(from.AddDate(10, 0, 0)) || !monthly[1].To.Equal(from.AddDate(20, 0, 0)) {
+		t.Errorf("monthly windows = %+v", monthly)
+	}
+}
+
+func TestParseCandleInterval(t *testing.T) {
+	want := map[string]investapi.CandleInterval{
+		"1m":  investapi.CandleInterval_CANDLE_INTERVAL_1_MIN,
+		"2m":  investapi.CandleInterval_CANDLE_INTERVAL_2_MIN,
+		"3m":  investapi.CandleInterval_CANDLE_INTERVAL_3_MIN,
+		"5m":  investapi.CandleInterval_CANDLE_INTERVAL_5_MIN,
+		"10m": investapi.CandleInterval_CANDLE_INTERVAL_10_MIN,
+		"15m": investapi.CandleInterval_CANDLE_INTERVAL_15_MIN,
+		"30m": investapi.CandleInterval_CANDLE_INTERVAL_30_MIN,
+		"1h":  investapi.CandleInterval_CANDLE_INTERVAL_HOUR,
+		"2h":  investapi.CandleInterval_CANDLE_INTERVAL_2_HOUR,
+		"4h":  investapi.CandleInterval_CANDLE_INTERVAL_4_HOUR,
+		"1d":  investapi.CandleInterval_CANDLE_INTERVAL_DAY,
+		"1w":  investapi.CandleInterval_CANDLE_INTERVAL_WEEK,
+		"1M":  investapi.CandleInterval_CANDLE_INTERVAL_MONTH,
+	}
+	for raw, expected := range want {
+		got, err := ParseCandleInterval(raw)
+		if err != nil || got != expected {
+			t.Errorf("ParseCandleInterval(%q) = %v, %v", raw, got, err)
+		}
+	}
+	if _, err := ParseCandleInterval("60m"); err == nil {
+		t.Fatal("want invalid interval error")
+	}
+}
+
+func TestCandlesAutoWindowsAndConcatenates(t *testing.T) {
+	fake := &fakeMarketData{candlesResp: []*investapi.HistoricCandle{{
+		Close: &investapi.Quotation{Units: 100}, IsComplete: true,
+	}}}
+	client := New(startMarketDataServer(t, fake))
+	client.pause = func(context.Context) error { return nil }
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	candles, err := client.Candles(context.Background(), "uid-1", investapi.CandleInterval_CANDLE_INTERVAL_1_MIN, from, from.Add(25*time.Hour))
+	if err != nil {
+		t.Fatalf("Candles: %v", err)
+	}
+	if len(candles) != 2 || !candles[0].GetIsComplete() {
+		t.Fatalf("candles = %+v", candles)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.gotCandleReqs) != 2 {
+		t.Fatalf("requests = %d, want 2", len(fake.gotCandleReqs))
+	}
+	if fake.gotCandleReqs[0].GetInstrumentId() != "uid-1" || fake.gotCandleReqs[0].GetInterval() != investapi.CandleInterval_CANDLE_INTERVAL_1_MIN {
+		t.Errorf("first request = %+v", fake.gotCandleReqs[0])
+	}
+	if !fake.gotCandleReqs[0].GetTo().AsTime().Equal(fake.gotCandleReqs[1].GetFrom().AsTime()) {
+		t.Errorf("request windows are not contiguous")
+	}
+}
+
+func TestCandlesErrorPath(t *testing.T) {
+	fake := &fakeMarketData{candlesErr: status.Error(codes.InvalidArgument, "30001")}
+	client := New(startMarketDataServer(t, fake))
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	ctx, info := transport.WithCallInfo(context.Background())
+	_, err := client.Candles(ctx, "uid-1", investapi.CandleInterval_CANDLE_INTERVAL_DAY, from, from.AddDate(0, 1, 0))
+	if err == nil {
+		t.Fatal("want error")
+	}
+	cerr := render.Classify(err, render.CallContext{Phase: info.Phase()})
+	if cerr.ExitCode() != render.ExitRejected {
+		t.Errorf("exit code = %d, want %d", cerr.ExitCode(), render.ExitRejected)
 	}
 }

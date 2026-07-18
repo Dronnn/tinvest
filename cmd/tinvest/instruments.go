@@ -28,7 +28,11 @@ func (a *app) instrumentsCmd() *cobra.Command {
 		Use:   "instruments",
 		Short: "Instrument reference data",
 	}
-	cmd.AddCommand(a.instrumentsGetCmd(), a.instrumentsSearchCmd())
+	cmd.AddCommand(
+		a.instrumentsGetCmd(), a.instrumentsSearchCmd(), a.instrumentsListCmd(),
+		a.instrumentsDividendsCmd(), a.instrumentsCouponsCmd(), a.instrumentsAccruedInterestCmd(),
+		a.instrumentsSchedulesCmd(), a.instrumentsTradingStatusCmd(),
+	)
 	return cmd
 }
 

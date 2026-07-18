@@ -66,7 +66,12 @@ func (a *app) rootCmd() *cobra.Command {
 	pf.DurationVar(&a.flags.Timeout, "timeout", 0, "per-call deadline (default 10s)")
 	pf.BoolVar(&a.flags.Sandbox, "sandbox", false, "shortcut: use the sandbox endpoint")
 
-	root.AddCommand(a.versionCmd(), a.tokenCmd(), a.accountsCmd(), a.instrumentsCmd(), a.quotesCmd(), a.orderbookCmd(), a.ordersCmd(), a.stopOrdersCmd(), a.sandboxCmd())
+	root.AddCommand(
+		a.versionCmd(), a.tokenCmd(), a.accountsCmd(), a.userCmd(),
+		a.portfolioCmd(), a.positionsCmd(), a.balanceCmd(), a.operationsCmd(), a.tradesCmd(),
+		a.instrumentsCmd(), a.quotesCmd(), a.orderbookCmd(), a.candlesCmd(), a.signalsCmd(),
+		a.ordersCmd(), a.stopOrdersCmd(), a.sandboxCmd(),
+	)
 	return root
 }
 
