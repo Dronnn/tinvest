@@ -41,6 +41,11 @@ func (a *app) orderbookGetCmd() *cobra.Command {
 			if err := marketdata.ValidateDepth(depth); err != nil {
 				return a.fail(mode, render.UsageError(err.Error()), render.NewMeta(settings.AccountID, "", time.Since(start)))
 			}
+			// Validate identifier syntax before requiring a token/connection so
+			// garbage input fails with exit 2 rather than an auth error (plan §7).
+			if cerr := validateInstrumentIDs(args...); cerr != nil {
+				return a.fail(mode, cerr, render.NewMeta(settings.AccountID, "", time.Since(start)))
+			}
 			conn, cerr := a.connect(cmd.Context(), settings)
 			if cerr != nil {
 				return a.fail(mode, cerr, render.NewMeta(settings.AccountID, "", time.Since(start)))

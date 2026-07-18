@@ -41,12 +41,13 @@ type Flags struct {
 
 // Settings is the fully resolved configuration for one invocation.
 type Settings struct {
-	Profile   string
-	Endpoint  string // resolved host:port
-	AccountID string
-	Output    string // "json", "table", or "" (auto: TTY sniffing)
-	Token     string // "" when no token source is configured
-	Timeout   time.Duration
+	Profile    string
+	Endpoint   string // resolved host:port
+	AccountID  string
+	Output     string // "json", "table", or "" (auto: TTY sniffing)
+	Token      string // "" when no token source is configured
+	Timeout    time.Duration
+	PolicyFile string // path to the profile's policy file, or "" if none
 }
 
 // File mirrors ~/.config/tinvest/config.toml.
@@ -57,10 +58,11 @@ type File struct {
 
 // Profile is one named profile in the config file.
 type Profile struct {
-	Endpoint  string `toml:"endpoint"` // "prod", "sandbox", or host:port
-	AccountID string `toml:"account_id"`
-	Output    string `toml:"output"`
-	TokenFile string `toml:"token_file"`
+	Endpoint   string `toml:"endpoint"` // "prod", "sandbox", or host:port
+	AccountID  string `toml:"account_id"`
+	Output     string `toml:"output"`
+	TokenFile  string `toml:"token_file"`
+	PolicyFile string `toml:"policy_file"` // pre-trade guardrails (internal/policy)
 }
 
 // TokenError marks token-resolution failures so the CLI can map them to the
@@ -117,12 +119,13 @@ func Load(flags Flags) (Settings, error) {
 	}
 
 	return Settings{
-		Profile:   name,
-		Endpoint:  endpoint,
-		AccountID: firstNonEmpty(flags.AccountID, profile.AccountID),
-		Output:    output,
-		Token:     token,
-		Timeout:   flags.Timeout,
+		Profile:    name,
+		Endpoint:   endpoint,
+		AccountID:  firstNonEmpty(flags.AccountID, profile.AccountID),
+		Output:     output,
+		Token:      token,
+		Timeout:    flags.Timeout,
+		PolicyFile: profile.PolicyFile,
 	}, nil
 }
 

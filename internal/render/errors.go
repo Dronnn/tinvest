@@ -14,6 +14,7 @@ type Code string
 
 const (
 	CodeUsage          Code = "USAGE"
+	CodePolicy         Code = "POLICY"
 	CodeAuth           Code = "AUTH"
 	CodeRateLimited    Code = "RATE_LIMITED"
 	CodeBrokerRejected Code = "BROKER_REJECTED"
@@ -45,6 +46,21 @@ type CLIError struct {
 	RetryAfter time.Duration
 	Phase      string
 	TrackingID string
+	// Details carries machine-readable key/value context, used by policy
+	// violations (plan §6) to name the breached rule and its bound and actual
+	// values. Nil for most errors.
+	Details map[string]string
+	// ReconcileHint is the machine-readable recovery instruction attached to an
+	// UNCONFIRMED (exit 7) mutation: the order_id to reconcile plus the command
+	// that resolves it (plan §9).
+	ReconcileHint *ReconcileHint
+}
+
+// ReconcileHint tells an agent how to converge on the true outcome of a
+// mutation whose result is unknown (plan §9).
+type ReconcileHint struct {
+	OrderID string `json:"order_id,omitempty"`
+	Command string `json:"command"`
 }
 
 func (e *CLIError) Error() string { return e.Message }
@@ -52,7 +68,7 @@ func (e *CLIError) Error() string { return e.Message }
 // ExitCode maps the classification to the process exit code.
 func (e *CLIError) ExitCode() int {
 	switch e.Code {
-	case CodeUsage:
+	case CodeUsage, CodePolicy:
 		return ExitUsage
 	case CodeAuth:
 		return ExitAuth
@@ -72,20 +88,42 @@ func (e *CLIError) ExitCode() int {
 // Body converts the error to its envelope representation.
 func (e *CLIError) Body() *ErrorBody {
 	return &ErrorBody{
-		Code:         e.Code,
-		GRPCCode:     e.GRPCCode,
-		APICode:      e.APICode,
-		Message:      e.Message,
-		Retryable:    e.Retryable,
-		RetryAfterMS: e.RetryAfter.Milliseconds(),
-		Phase:        e.Phase,
-		TrackingID:   e.TrackingID,
+		Code:          e.Code,
+		GRPCCode:      e.GRPCCode,
+		APICode:       e.APICode,
+		Message:       e.Message,
+		Retryable:     e.Retryable,
+		RetryAfterMS:  e.RetryAfter.Milliseconds(),
+		Phase:         e.Phase,
+		TrackingID:    e.TrackingID,
+		Details:       e.Details,
+		ReconcileHint: e.ReconcileHint,
 	}
 }
 
 // UsageError builds a validation/usage failure (nothing sent to the broker).
 func UsageError(message string) *CLIError {
 	return &CLIError{Code: CodeUsage, Message: message}
+}
+
+// PolicyError builds a policy-guardrail violation (plan §6): exit 2, code
+// POLICY, with machine-readable details naming the breached rule. Nothing was
+// sent to the broker and no ledger entry was created.
+func PolicyError(message string, details map[string]string) *CLIError {
+	return &CLIError{Code: CodePolicy, Message: message, Details: details}
+}
+
+// UnconfirmedError builds an exit-7 unknown-state failure for a mutation that
+// went on the wire but whose outcome could not be confirmed (plan §9). The
+// order_id and reconcile command are surfaced so a caller can converge.
+func UnconfirmedError(message, orderID, reconcileCmd string, cc CallContext) *CLIError {
+	return &CLIError{
+		Code:          CodeUnconfirmed,
+		Message:       message,
+		Phase:         cc.Phase.String(),
+		TrackingID:    cc.TrackingID,
+		ReconcileHint: &ReconcileHint{OrderID: orderID, Command: reconcileCmd},
+	}
 }
 
 // AuthError builds an auth failure that did not come from a gRPC call

@@ -60,3 +60,49 @@ func TestQuotation(t *testing.T) {
 		t.Errorf("Quotation must not carry a currency, got %q", got.Currency)
 	}
 }
+
+func TestParseQuotation(t *testing.T) {
+	cases := []struct {
+		in    string
+		units int64
+		nano  int32
+	}{
+		{"0", 0, 0},
+		{"123", 123, 0},
+		{"123.45", 123, 450000000},
+		{"-0.001", 0, -1000000},
+		{"-5.5", -5, -500000000},
+		{"+7.25", 7, 250000000},
+		{".5", 0, 500000000},
+	}
+	for _, c := range cases {
+		got, err := ParseQuotation(c.in)
+		if err != nil {
+			t.Errorf("ParseQuotation(%q): %v", c.in, err)
+			continue
+		}
+		if got.GetUnits() != c.units || got.GetNano() != c.nano {
+			t.Errorf("ParseQuotation(%q) = {%d,%d}, want {%d,%d}", c.in, got.GetUnits(), got.GetNano(), c.units, c.nano)
+		}
+	}
+}
+
+func TestParseQuotationRoundTrip(t *testing.T) {
+	for _, s := range []string{"0", "123.45", "-5.5", "1000000.000000001", "0.999999999"} {
+		q, err := ParseQuotation(s)
+		if err != nil {
+			t.Fatalf("ParseQuotation(%q): %v", s, err)
+		}
+		if got := DecimalString(q.GetUnits(), q.GetNano()); got != s {
+			t.Errorf("round trip %q -> %q", s, got)
+		}
+	}
+}
+
+func TestParseQuotationErrors(t *testing.T) {
+	for _, s := range []string{"", "abc", "1.2.3", "1.2345678901", "  "} {
+		if _, err := ParseQuotation(s); err == nil {
+			t.Errorf("ParseQuotation(%q) should error", s)
+		}
+	}
+}

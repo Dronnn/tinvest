@@ -1,6 +1,7 @@
 package render
 
 import (
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -69,4 +70,56 @@ func DecimalString(units int64, nano int32) string {
 func pad9(n int64) string {
 	s := strconv.FormatInt(n, 10)
 	return strings.Repeat("0", 9-len(s)) + s
+}
+
+// ParseQuotation parses an exact decimal string ("123.45", "-0.001") into the
+// contract's units+nano pair. It is the inverse of DecimalString and the
+// entry point for prices given as decimal strings (JSON input, policy bounds).
+// At most 9 fractional digits are accepted; more is an error rather than a
+// silent truncation. units and nano share the sign, per the contract.
+func ParseQuotation(s string) (*investapi.Quotation, error) {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return nil, fmt.Errorf("empty decimal")
+	}
+	negative := false
+	switch trimmed[0] {
+	case '+':
+		trimmed = trimmed[1:]
+	case '-':
+		negative = true
+		trimmed = trimmed[1:]
+	}
+	if trimmed == "" {
+		return nil, fmt.Errorf("invalid decimal %q", s)
+	}
+
+	intPart, fracPart := trimmed, ""
+	if dot := strings.IndexByte(trimmed, '.'); dot >= 0 {
+		intPart = trimmed[:dot]
+		fracPart = trimmed[dot+1:]
+	}
+	if intPart == "" {
+		intPart = "0"
+	}
+	if len(fracPart) > 9 {
+		return nil, fmt.Errorf("decimal %q has more than 9 fractional digits", s)
+	}
+
+	units, err := strconv.ParseInt(intPart, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid decimal %q: %w", s, err)
+	}
+	var nano int64
+	if fracPart != "" {
+		padded := fracPart + strings.Repeat("0", 9-len(fracPart))
+		nano, err = strconv.ParseInt(padded, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid decimal %q: %w", s, err)
+		}
+	}
+	if negative {
+		units, nano = -units, -nano
+	}
+	return &investapi.Quotation{Units: units, Nano: int32(nano)}, nil
 }

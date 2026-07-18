@@ -44,14 +44,16 @@ type Envelope struct {
 
 // ErrorBody is the machine-readable error block of a failure envelope.
 type ErrorBody struct {
-	Code         Code   `json:"code"`
-	GRPCCode     string `json:"grpc_code,omitempty"`
-	APICode      string `json:"api_code,omitempty"`
-	Message      string `json:"message"`
-	Retryable    bool   `json:"retryable"`
-	RetryAfterMS int64  `json:"retry_after_ms,omitempty"`
-	Phase        string `json:"phase,omitempty"`
-	TrackingID   string `json:"tracking_id,omitempty"`
+	Code          Code              `json:"code"`
+	GRPCCode      string            `json:"grpc_code,omitempty"`
+	APICode       string            `json:"api_code,omitempty"`
+	Message       string            `json:"message"`
+	Retryable     bool              `json:"retryable"`
+	RetryAfterMS  int64             `json:"retry_after_ms,omitempty"`
+	Phase         string            `json:"phase,omitempty"`
+	TrackingID    string            `json:"tracking_id,omitempty"`
+	Details       map[string]string `json:"details,omitempty"`
+	ReconcileHint *ReconcileHint    `json:"reconcile,omitempty"`
 }
 
 // Success wraps data in an ok envelope.

@@ -41,6 +41,9 @@ func (a *app) quotesLastCmd() *cobra.Command {
 			if cerr != nil {
 				return a.fail(mode, cerr, render.NewMeta("", "", time.Since(start)))
 			}
+			if cerr := validateInstrumentIDs(args...); cerr != nil {
+				return a.fail(mode, cerr, render.NewMeta(settings.AccountID, "", time.Since(start)))
+			}
 			conn, cerr := a.connect(cmd.Context(), settings)
 			if cerr != nil {
 				return a.fail(mode, cerr, render.NewMeta(settings.AccountID, "", time.Since(start)))
@@ -82,6 +85,9 @@ func (a *app) quotesCloseCmd() *cobra.Command {
 			mode := render.Mode(settings.Output, os.Stdout)
 			if cerr != nil {
 				return a.fail(mode, cerr, render.NewMeta("", "", time.Since(start)))
+			}
+			if cerr := validateInstrumentIDs(args...); cerr != nil {
+				return a.fail(mode, cerr, render.NewMeta(settings.AccountID, "", time.Since(start)))
 			}
 			conn, cerr := a.connect(cmd.Context(), settings)
 			if cerr != nil {

@@ -9,9 +9,11 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 
+	brokerinstruments "tinvest/internal/broker/instruments"
 	"tinvest/internal/config"
 	"tinvest/internal/render"
 	"tinvest/internal/transport"
+	"tinvest/internal/transport/retry"
 )
 
 // exitError carries a process exit code out of a command whose envelope has
@@ -22,6 +24,9 @@ func (e *exitError) Error() string { return fmt.Sprintf("exit code %d", e.code) 
 
 type app struct {
 	flags config.Flags
+	// ledgerDir overrides the intent-journal directory; empty means
+	// ledger.DefaultDir. Set by tests to an isolated temp dir.
+	ledgerDir string
 }
 
 func execute() int {
@@ -61,7 +66,7 @@ func (a *app) rootCmd() *cobra.Command {
 	pf.DurationVar(&a.flags.Timeout, "timeout", 0, "per-call deadline (default 10s)")
 	pf.BoolVar(&a.flags.Sandbox, "sandbox", false, "shortcut: use the sandbox endpoint")
 
-	root.AddCommand(a.versionCmd(), a.tokenCmd(), a.accountsCmd(), a.instrumentsCmd(), a.quotesCmd(), a.orderbookCmd())
+	root.AddCommand(a.versionCmd(), a.tokenCmd(), a.accountsCmd(), a.instrumentsCmd(), a.quotesCmd(), a.orderbookCmd(), a.ordersCmd())
 	return root
 }
 
@@ -84,15 +89,43 @@ func (a *app) connect(ctx context.Context, settings config.Settings) (*grpc.Clie
 	if settings.Token == "" {
 		return nil, render.AuthError("no token configured: set TINVEST_TOKEN, use --token-file, or configure token_file in a profile")
 	}
+	// The default retry policy is enabled for every connection: reads retry
+	// automatically, mutations only when the call site opts in via
+	// retry.Idempotent (plan §9). Enabling it here is safe because eligibility
+	// is decided per-call, not per-connection.
+	policy := retry.DefaultRetryPolicy()
 	conn, err := transport.Dial(ctx, transport.Config{
-		Endpoint: settings.Endpoint,
-		Token:    settings.Token,
-		Timeout:  settings.Timeout,
+		Endpoint:    settings.Endpoint,
+		Token:       settings.Token,
+		Timeout:     settings.Timeout,
+		RetryPolicy: &policy,
 	})
 	if err != nil {
 		return nil, render.UsageError(fmt.Sprintf("invalid endpoint %q: %v", settings.Endpoint, err))
 	}
 	return conn, nil
+}
+
+// validateInstrumentIDs checks the syntax of every instrument identifier
+// locally, before any token or connection is required (plan §7 precedence:
+// garbage input yields exit 2 even without a token). It is the syntactic half
+// of resolveAll's classification, pulled ahead of connect.
+func validateInstrumentIDs(ids ...string) *render.CLIError {
+	for _, id := range ids {
+		if _, err := brokerinstruments.Classify(id); err != nil {
+			return render.UsageError(err.Error())
+		}
+	}
+	return nil
+}
+
+// requireAccount enforces that a mutating command has an account (plan §8:
+// never guess). Returns a usage error when none is configured or passed.
+func requireAccount(settings config.Settings) *render.CLIError {
+	if settings.AccountID == "" {
+		return render.UsageError("account required for this command: pass --account or configure account_id in a profile")
+	}
+	return nil
 }
 
 // fail reports a classified error: JSON envelope on stdout in JSON mode, a
