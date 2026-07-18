@@ -1,0 +1,31 @@
+package stoporders
+
+import investapi "tinvest/internal/pb/investapi"
+
+// Status is the CLI's stable, machine-facing name for a stop order's status
+// (mirrors internal/broker/orders.Lifecycle's role for regular orders): the
+// contract's StopOrderStatusOption enum is the source; these names are what
+// appears in JSON so consumers never depend on the proto enum spelling.
+const (
+	StatusUnspecified = "unspecified"
+	StatusActive      = "active"
+	StatusExecuted    = "executed"
+	StatusCanceled    = "canceled"
+	StatusExpired     = "expired"
+)
+
+// StatusName maps a contract stop-order status to its stable CLI name.
+func StatusName(s investapi.StopOrderStatusOption) string {
+	switch s {
+	case investapi.StopOrderStatusOption_STOP_ORDER_STATUS_ACTIVE:
+		return StatusActive
+	case investapi.StopOrderStatusOption_STOP_ORDER_STATUS_EXECUTED:
+		return StatusExecuted
+	case investapi.StopOrderStatusOption_STOP_ORDER_STATUS_CANCELED:
+		return StatusCanceled
+	case investapi.StopOrderStatusOption_STOP_ORDER_STATUS_EXPIRED:
+		return StatusExpired
+	default:
+		return StatusUnspecified
+	}
+}
