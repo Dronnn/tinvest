@@ -374,7 +374,8 @@ func TestDropReconnectsAndReplaysDeduplicatedSubscription(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	events := make(chan streamrunner.LifecycleEvent, 16)
-	reconciliations := 0
+	reconcileInvocations := 0
+	reconciled := 0
 	runner := streamrunner.Runner[investapi.MarketDataRequest, investapi.MarketDataResponse]{
 		Open: marketDataSession(client), Subscriptions: registry, Watchdog: time.Second,
 		Backoff: func(int) time.Duration { return 0 },
@@ -383,14 +384,23 @@ func TestDropReconnectsAndReplaysDeduplicatedSubscription(t *testing.T) {
 			return nil
 		},
 		Reconcile: func(reconcileCtx context.Context) error {
+			reconcileInvocations++
 			_, err := snapshotClient.GetOrderBook(reconcileCtx, &investapi.GetOrderBookRequest{})
-			if err == nil {
-				reconciliations++
-				if reconciliations == 2 {
-					cancel()
-				}
+			if err != nil {
+				// Connection 0's reconcile can be cancelled by connection 0's own
+				// injected drop (Reconcile is bound to streamCtx by design). That
+				// is expected; the next connection reconciles afresh.
+				return err
 			}
-			return err
+			reconciled++
+			// Shut down after the first successful reconcile on a *reconnected*
+			// connection. Keyed on the invocation count (one per connection), not
+			// on the count of successful reconciles, so whether connection 0's
+			// reconcile survived its drop cannot add a spurious third connection.
+			if reconcileInvocations >= 2 {
+				cancel()
+			}
+			return nil
 		},
 	}
 	if err := runner.Run(ctx); err != nil {
@@ -419,8 +429,17 @@ func TestDropReconnectsAndReplaysDeduplicatedSubscription(t *testing.T) {
 	if server.connections < 2 {
 		t.Fatalf("connections = %d, want reconnect", server.connections)
 	}
-	if server.snapshots != 2 {
-		t.Fatalf("snapshot reconciliations = %d, want one per connection", server.snapshots)
+	// One reconcile per connection is the invariant. It is asserted on the
+	// client-observed invocation count, not on server.snapshots: a reconcile
+	// bound to streamCtx can be cancelled by its connection's drop after the
+	// GetOrderBook request already reached the server, so the server-side count
+	// races the drop (the source of this test's prior CI flake). The invocation
+	// count does not — the runner calls Reconcile exactly once per connection.
+	if reconcileInvocations != server.connections {
+		t.Fatalf("reconcile invocations = %d, want one per connection (%d)", reconcileInvocations, server.connections)
+	}
+	if reconciled < 1 {
+		t.Fatalf("no reconcile completed successfully after reconnect")
 	}
 	for connection, requests := range server.requests[:2] {
 		if len(requests) != 1 {
@@ -488,6 +507,53 @@ func TestNonRetryableOpenErrorStopsImmediately(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("open calls = %d, want 1", calls)
+	}
+}
+
+// TestCancelOnQuietConnectionExitsBeforeWatchdog locks in prompt shutdown: when
+// the run context is cancelled while the runner sits on an established but silent
+// connection, Run must return well within the watchdog window and must not
+// redial. It guards against a regression where a cancelled run leaks a full
+// watchdog wait and a spurious extra connection on the way out.
+func TestCancelOnQuietConnectionExitsBeforeWatchdog(t *testing.T) {
+	watchdog := 500 * time.Millisecond
+	opens := 0
+	connected := make(chan struct{}, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runner := streamrunner.Runner[int, int]{
+		Watchdog: watchdog,
+		Backoff:  func(int) time.Duration { return 0 },
+		Open: func(streamCtx context.Context) (streamrunner.Session[int, int], error) {
+			opens++
+			return streamrunner.Session[int, int]{Recv: func() (*int, error) {
+				<-streamCtx.Done() // silent forever
+				return nil, streamCtx.Err()
+			}}, nil
+		},
+		OnLifecycle: func(event streamrunner.LifecycleEvent) error {
+			if event.Type == streamrunner.EventConnected {
+				select {
+				case connected <- struct{}{}:
+				default:
+				}
+			}
+			return nil
+		},
+	}
+	go func() {
+		<-connected
+		cancel()
+	}()
+	start := time.Now()
+	if err := runner.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > watchdog/2 {
+		t.Fatalf("shutdown took %v, want well under the %v watchdog (no full-window wait)", elapsed, watchdog)
+	}
+	if opens != 1 {
+		t.Fatalf("opens = %d, want exactly 1 (no redial after cancellation)", opens)
 	}
 }
 
