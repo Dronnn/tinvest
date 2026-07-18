@@ -1,0 +1,18 @@
+version: v2
+modules:
+  - path: proto
+lint:
+  # The contracts are vendored verbatim and do not follow buf's default style
+  # guide (package layout, enum naming, RPC conventions). Linting upstream
+  # style is not our job, so we keep only MINIMAL structural checks; the
+  # value for drift detection lives in `breaking` below.
+  use:
+    - MINIMAL
+  except:
+    # The protos are vendored flat (as upstream ships them under
+    # src/docs/contracts/), so their directory does not mirror the proto
+    # package path. Expected for verbatim vendoring.
+    - PACKAGE_DIRECTORY_MATCH
+breaking:
+  use:
+    - FILE

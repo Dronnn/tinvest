@@ -1,0 +1,21 @@
+version: v2
+# Managed mode overrides the vendored `option go_package = "./;investapi"`.
+# All contract files share one proto package, so we pin them to a single Go
+# import path with an explicit `;investapi` name suffix; otherwise buf would
+# derive the package name `contractv1` from the proto package `...contract.v1`.
+# The `module=tinvest` plugin option strips the module prefix from the import
+# path to place generated code at internal/pb/investapi on disk.
+managed:
+  enabled: true
+  override:
+    - file_option: go_package
+      value: tinvest/internal/pb/investapi;investapi
+plugins:
+  - local: ["go", "run", "google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11"]
+    out: .
+    opt:
+      - module=tinvest
+  - local: ["go", "run", "google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2"]
+    out: .
+    opt:
+      - module=tinvest

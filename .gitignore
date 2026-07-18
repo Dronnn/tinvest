@@ -1,0 +1,29 @@
+# Binaries
+/tinvest
+/dist/
+*.exe
+*.test
+*.out
+
+# Go
+/vendor/
+go.work
+go.work.sum
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Log run artifacts (keep the markdown logs, drop captured command output)
+logs/*.output
+
+# Local environment / secrets — never commit tokens
+*.env
+.env
+
+# private project files - never publish
+docs/
+logs/
+.mcp.json
+.claude/
