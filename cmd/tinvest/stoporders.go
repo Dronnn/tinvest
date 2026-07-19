@@ -74,7 +74,7 @@ func (a *app) stopOrdersPlaceCmd() *cobra.Command {
 	var f stopPlaceFlags
 	cmd := &cobra.Command{
 		Use:   "place",
-		Short: "Place a stop order (idempotent, journaled; never auto-retried — plan §9)",
+		Short: "Place a stop order (idempotent, journaled; never auto-retried)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.runPlaceStop(cmd, &f)
