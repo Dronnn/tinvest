@@ -148,6 +148,62 @@ type Ledger struct {
 	repairs []TornTail // torn tails detected+quarantined during this handle's life
 }
 
+// AdvisoryLock is a process-safe exclusive file lock. It reuses the same
+// platform flock implementation as journal appends and releases the lock when
+// closed.
+type AdvisoryLock struct {
+	mu sync.Mutex
+	f  *os.File
+}
+
+// AcquireAccountLock serializes an account-scoped critical section across CLI
+// processes. Lock files live beside the journal directory under locks/; the
+// account id is hashed so it cannot escape that directory or create invalid
+// filenames.
+func AcquireAccountLock(journalDir, accountID string) (*AdvisoryLock, error) {
+	if journalDir == "" {
+		return nil, errors.New("ledger: empty journal directory for account lock")
+	}
+	if accountID == "" {
+		return nil, errors.New("ledger: account id required for account lock")
+	}
+	lockDir := filepath.Join(filepath.Dir(filepath.Clean(journalDir)), "locks")
+	if err := mkdirAllSync(lockDir, dirPerm); err != nil {
+		return nil, fmt.Errorf("ledger: create lock directory: %w", err)
+	}
+	sum := sha256.Sum256([]byte(accountID))
+	path := filepath.Join(lockDir, hex.EncodeToString(sum[:])+".lock")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, filePerm)
+	if err != nil {
+		return nil, fmt.Errorf("ledger: open account lock: %w", err)
+	}
+	if err := lockFile(f); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("ledger: lock account: %w", err)
+	}
+	return &AdvisoryLock{f: f}, nil
+}
+
+// Close releases the advisory lock and closes its file handle. It is safe to
+// call more than once.
+func (l *AdvisoryLock) Close() error {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.f == nil {
+		return nil
+	}
+	unlockErr := unlockFile(l.f)
+	closeErr := l.f.Close()
+	l.f = nil
+	if unlockErr != nil {
+		return unlockErr
+	}
+	return closeErr
+}
+
 // TornTail records a torn final write that Open detected and repaired: a partial
 // line at EOF (no terminating newline, e.g. power loss mid-append) that would
 // otherwise have been concatenated onto by the next append and corrupted a fresh
@@ -686,6 +742,45 @@ func (l *Ledger) Unresolved() ([]*Entry, error) {
 		return out, &RecoveryError{Corruptions: corruptions}
 	}
 	return out, nil
+}
+
+// AssignedStopOrderIDs returns stop-order ids already tied to successful
+// mutations of kind, grouped by account. Reconciliation uses this durable
+// history to ensure a broker stop order cannot be assigned again on a later
+// run. Corrupt journal lines fail the scan closed because they could hide an
+// earlier assignment.
+func (l *Ledger) AssignedStopOrderIDs(kind string) (map[string][]string, error) {
+	paths, err := filepath.Glob(filepath.Join(l.dir, "*.jsonl"))
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(paths)
+
+	assigned := make(map[string][]string)
+	var corruptions []Corruption
+	for _, path := range paths {
+		if err := l.repairTornTailAt(path); err != nil {
+			return nil, err
+		}
+		recs, corr, err := readRecords(path, l.crc)
+		if err != nil {
+			return nil, err
+		}
+		corruptions = append(corruptions, corr...)
+		for _, r := range recs {
+			if r.Kind != kind || r.AccountID == "" || r.StopOrderID == "" {
+				continue
+			}
+			if r.Stage != StageBrokerConfirmed && r.Stage != StageReconciled {
+				continue
+			}
+			assigned[r.AccountID] = append(assigned[r.AccountID], r.StopOrderID)
+		}
+	}
+	if len(corruptions) > 0 {
+		return nil, &RecoveryError{Corruptions: corruptions}
+	}
+	return assigned, nil
 }
 
 func (l *Ledger) entryFromRecord(r record) *Entry {

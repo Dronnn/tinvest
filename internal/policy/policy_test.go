@@ -21,6 +21,16 @@ func limitIntent(lots int64, priceUnits int64) OrderIntent {
 	}
 }
 
+func clearHomeEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{"HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "home"} {
+		t.Setenv(key, "")
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestLoadRejectsUnknownKey(t *testing.T) {
 	path := writePolicy(t, "max_lots_per_order = 5\nbogus_key = true\n")
 	if _, err := Load(path); err == nil {
@@ -166,6 +176,24 @@ func TestMaxOpenOrders(t *testing.T) {
 	v := p.CheckOpenOrders(3)
 	if v == nil || v.Rule != "max_open_orders" {
 		t.Fatalf("want max_open_orders violation at the cap, got %+v", v)
+	}
+}
+
+func TestCheckKillSwitchFailsClosedWhenHomeCannotBeResolved(t *testing.T) {
+	clearHomeEnv(t)
+
+	p := &Policy{KillSwitchFile: "~/tinvest-kill-switch"}
+	if v := p.CheckKillSwitch(); v == nil {
+		t.Fatal("unexpandable kill_switch_file was treated as absent")
+	}
+}
+
+func TestLoadRejectsUnexpandableKillSwitchPath(t *testing.T) {
+	clearHomeEnv(t)
+	path := writePolicy(t, "kill_switch_file = \"~/tinvest-kill-switch\"\n")
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("policy with an unexpandable kill_switch_file was accepted")
 	}
 }
 

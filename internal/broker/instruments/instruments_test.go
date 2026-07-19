@@ -213,7 +213,7 @@ func TestResolveCachesOnlySuccess(t *testing.T) {
 func TestResolveNoCacheBypassesReadAndWrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "instruments.json")
 	cache := NewCache(path, 24*time.Hour, nil)
-	if err := cache.Put("BBG004730N88", &investapi.Instrument{Uid: "stale-uid"}); err != nil {
+	if err := cache.Put("BBG004730N88", &investapi.Instrument{Uid: "stale-uid", Figi: "BBG004730N88"}); err != nil {
 		t.Fatalf("seed cache: %v", err)
 	}
 
@@ -238,6 +238,34 @@ func TestResolveNoCacheBypassesReadAndWrite(t *testing.T) {
 	cached, ok := cache.Get("BBG004730N88")
 	if !ok || cached.GetUid() != "stale-uid" {
 		t.Errorf("cache entry changed by a --no-cache resolution: %+v, ok=%v", cached, ok)
+	}
+}
+
+func TestResolveRefetchesCacheEntryThatContradictsLookupKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "instruments.json")
+	cache := NewCache(path, 24*time.Hour, nil)
+	if err := cache.Put("SBER@TQBR", &investapi.Instrument{
+		Uid: "poisoned-uid", Ticker: "GAZP", ClassCode: "TQBR",
+	}); err != nil {
+		t.Fatalf("seed poisoned cache: %v", err)
+	}
+
+	fresh := &investapi.Instrument{Uid: "fresh-uid", Ticker: "SBER", ClassCode: "TQBR"}
+	fake := &fakeInstruments{resp: fresh}
+	conn := startInstrumentsServer(t, fake)
+
+	got, err := New(conn, cache).Resolve(context.Background(), "SBER@TQBR", false)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.GetUid() != "fresh-uid" {
+		t.Fatalf("Resolve returned uid %q from a contradictory cache entry; want fresh-uid", got.GetUid())
+	}
+	fake.mu.Lock()
+	requests := len(fake.gotRequests)
+	fake.mu.Unlock()
+	if requests != 1 {
+		t.Fatalf("broker requests = %d, want 1 refetch after rejecting poisoned cache", requests)
 	}
 }
 

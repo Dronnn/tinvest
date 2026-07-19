@@ -59,6 +59,8 @@ type orderPayload struct {
 	Price        string `json:"price,omitempty"`
 	TimeInForce  string `json:"time_in_force,omitempty"`
 	Async        bool   `json:"async,omitempty"`
+	Replaces     string `json:"replaces,omitempty"`
+	Quantity     int64  `json:"quantity,omitempty"`
 	// CreatedAt is the RFC 3339 UTC time the intent was journaled. Reconciliation
 	// uses it to bound the terminal-visibility horizon: the day list (ListToday)
 	// only covers orders created today, so an intent created before today whose
@@ -236,6 +238,12 @@ func (a *app) runPlace(cmd *cobra.Command, f *placeFlags) error {
 
 	// Enforce the open-order cap (needs a read) before placing.
 	if pol != nil && pol.MaxOpenOrders > 0 {
+		openOrdersLock, err := a.acquireOpenOrdersLock(settings.AccountID)
+		if err != nil {
+			return a.fail(mode, &render.CLIError{Code: render.CodeInternal, Message: fmt.Sprintf("lock max_open_orders check: %v", err)}, render.NewMeta(settings.AccountID, "", time.Since(start)))
+		}
+		defer func() { _ = openOrdersLock.Close() }()
+
 		ctx, info := transport.WithCallInfo(cmd.Context())
 		open, err := cl.List(ctx, settings.AccountID)
 		if err != nil {
@@ -361,7 +369,10 @@ func placeExec(cmdCtx context.Context, cl orders.Client, led *ledger.Ledger, int
 		if cerr.Code == render.CodeUnconfirmed {
 			// Leave the entry at send-started (Unresolved): the order may have
 			// reached the broker. Attach the reconcile hint (plan §9).
-			cerr.ReconcileHint = &render.ReconcileHint{OrderID: p.OrderID, Command: reconcileCommand}
+			cerr.ReconcileHint = &render.ReconcileHint{
+				OrderID: p.OrderID,
+				Command: scopedBrokerCommand(intent.Profile, intent.AccountID, "orders", "reconcile"),
+			}
 			return out, cerr
 		}
 		// A confirmed error (server status) is a definitive outcome: record it.
@@ -758,7 +769,7 @@ func (a *app) ordersCancelCmd() *cobra.Command {
 						}, args[0], "was already settled")
 					}
 				}
-				command := fmt.Sprintf("tinvest orders get %s", args[0])
+				command := scopedBrokerCommand(settings.Profile, settings.AccountID, "orders", "get", args[0])
 				return a.fail(mode, addCancelReconcileHint(cerr, args[0], command), meta)
 			}
 			data := cancelData{OrderID: args[0], Time: render.Timestamp(resp.GetTime())}
@@ -784,12 +795,32 @@ func (a *app) ordersCancelCmd() *cobra.Command {
 func cancelSettledNote(ctx context.Context, cl orders.Client, accountID, orderID string, byRequestID bool) (string, bool) {
 	cctx, _ := transport.WithCallInfo(ctx)
 	state, err := cl.Get(cctx, accountID, orderID, byRequestID)
-	if err != nil {
+	if err == nil {
+		st := state.GetExecutionReportStatus()
+		if orders.IsTerminal(st) {
+			return fmt.Sprintf("order was already terminal (%s); the cancel is a satisfied no-op", orders.Lifecycle(st)), true
+		}
 		return "", false
 	}
-	st := state.GetExecutionReportStatus()
-	if orders.IsTerminal(st) {
-		return fmt.Sprintf("order was already terminal (%s); the cancel is a satisfied no-op", orders.Lifecycle(st)), true
+
+	lctx, _ := transport.WithCallInfo(ctx)
+	list, listErr := cl.ListToday(lctx, accountID)
+	if listErr != nil {
+		return "", false
+	}
+	for _, candidate := range list {
+		matches := candidate.GetOrderId() == orderID
+		if byRequestID {
+			matches = candidate.GetOrderRequestId() == orderID
+		}
+		if !matches {
+			continue
+		}
+		st := candidate.GetExecutionReportStatus()
+		if orders.IsTerminal(st) {
+			return fmt.Sprintf("order was already terminal (%s); the cancel is a satisfied no-op", orders.Lifecycle(st)), true
+		}
+		return "", false
 	}
 	return "", false
 }
@@ -885,10 +916,7 @@ func (a *app) ordersReplaceCmd() *cobra.Command {
 			entry, err := led.Begin(ledger.Intent{
 				IntentID: key, Kind: kindOrderReplace, AccountID: settings.AccountID,
 				Profile: settings.Profile, Attempt: 1, OrderID: key,
-				Payload: map[string]any{
-					"endpoint": settings.Endpoint, "replaces": args[0], "quantity": quantity,
-					"price": price, "confirm_margin_trade": confirmMarginTrade,
-				},
+				Payload: replacementJournalPayload(settings, key, args[0], quantity, price, confirmMarginTrade, start),
 			})
 			if err != nil {
 				return a.fail(mode, &render.CLIError{Code: render.CodeInternal, Message: err.Error()}, render.NewMeta(settings.AccountID, "", time.Since(start)))
@@ -906,7 +934,10 @@ func (a *app) ordersReplaceCmd() *cobra.Command {
 			if err != nil {
 				cerr := render.Classify(err, callContext(info, true))
 				if cerr.Code == render.CodeUnconfirmed {
-					cerr.ReconcileHint = &render.ReconcileHint{OrderID: key, Command: reconcileCommand}
+					cerr.ReconcileHint = &render.ReconcileHint{
+						OrderID: key,
+						Command: scopedBrokerCommand(settings.Profile, settings.AccountID, "orders", "reconcile"),
+					}
 					return a.fail(mode, cerr, meta)
 				}
 				warnJournalWrite("broker-rejected", reconcileCommand, entry.Rejected(err))
@@ -1236,7 +1267,7 @@ func newReconcileData(outcomes []render.ReconcileOutcomeView, foreignHint string
 		if outcome.Outcome == "foreign" {
 			data.ForeignIntentCount++
 		}
-		if reconcileNeedsAttention(outcome.Outcome) {
+		if reconcileNeedsAttention(outcome.Outcome) || outcome.LedgerWriteFailed {
 			data.UnresolvedCount++
 		}
 	}
@@ -1273,7 +1304,8 @@ func finishReconcile(mode string, data reconcileData, meta render.Meta) error {
 		writeErr = render.WriteJSON(os.Stdout, render.Success(data, meta))
 	}
 	if writeErr != nil {
-		return writeErr
+		fmt.Fprintf(os.Stderr, "error: writing reconcile result failed: %v\n", writeErr)
+		return &exitError{render.ExitInternal}
 	}
 	if data.UnresolvedCount > 0 {
 		return &exitError{render.ExitInternal}
@@ -1364,6 +1396,12 @@ func reconcileFlowForTarget(
 			outcomes = append(outcomes, out)
 			continue
 		}
+		if e.Stage() == ledger.StageIntentCreated {
+			out.Outcome = "not-placed"
+			recordReconciled(&out, e, ledger.Result{Error: "not-placed-before-send"})
+			outcomes = append(outcomes, out)
+			continue
+		}
 		if e.OrderID() == "" || e.AccountID() == "" {
 			// Nothing to look the order up by; leave it for a human.
 			out.Outcome = "indeterminate"
@@ -1414,7 +1452,7 @@ func reconcileFlowForTarget(
 			// The re-check found it after all.
 		}
 		setPlacedReconcileOutcome(&out, state)
-		_ = e.Reconciled(ledger.Result{OrderID: state.GetOrderId(), TrackingID: info.TrackingID()})
+		recordReconciled(&out, e, ledger.Result{OrderID: state.GetOrderId(), TrackingID: info.TrackingID()})
 		outcomes = append(outcomes, out)
 	}
 	return outcomes, nil
@@ -1466,12 +1504,12 @@ func resolveSyncNotFound(ctx context.Context, cl orders.Client, e *ledger.Entry,
 	}
 	if s := findOrderByRequestID(list, e.OrderID()); s != nil {
 		setPlacedReconcileOutcome(out, s)
-		_ = e.Reconciled(ledger.Result{OrderID: s.GetOrderId(), TrackingID: info.TrackingID()})
+		recordReconciled(out, e, ledger.Result{OrderID: s.GetOrderId(), TrackingID: info.TrackingID()})
 		return
 	}
 	if intentCreatedToday(payload.CreatedAt) {
 		out.Outcome = "not-placed"
-		_ = e.Reconciled(ledger.Result{Error: "not-placed"})
+		recordReconciled(out, e, ledger.Result{Error: "not-placed"})
 		return
 	}
 	out.Outcome = "unresolved"
@@ -1497,7 +1535,7 @@ func reconcileAsyncNotFound(ctx context.Context, cl orders.Client, e *ledger.Ent
 	}
 	if s := findOrderByRequestID(list, e.OrderID()); s != nil {
 		setPlacedReconcileOutcome(out, s)
-		_ = e.Reconciled(ledger.Result{OrderID: s.GetOrderId(), TrackingID: info.TrackingID()})
+		recordReconciled(out, e, ledger.Result{OrderID: s.GetOrderId(), TrackingID: info.TrackingID()})
 		return
 	}
 	// Not confirmable yet: leave the intent unresolved for a later run.
@@ -1555,6 +1593,18 @@ func setPlacedReconcileOutcome(out *render.ReconcileOutcomeView, state *investap
 	out.Outcome = "placed"
 	out.OrderID = state.GetOrderId()
 	out.Lifecycle = orders.Lifecycle(state.GetExecutionReportStatus())
+}
+
+func recordReconciled(out *render.ReconcileOutcomeView, entry *ledger.Entry, result ledger.Result) {
+	if err := entry.Reconciled(result); err != nil {
+		out.LedgerWriteFailed = true
+		note := fmt.Sprintf("ledger write failed; intent will reappear: %v", err)
+		if out.Note == "" {
+			out.Note = note
+		} else {
+			out.Note += "; " + note
+		}
+	}
 }
 
 func foreignIntentMessage(kind, command string) string {
@@ -1628,15 +1678,74 @@ func (a *app) resolveOne(cmdCtx context.Context, conn *grpc.ClientConn, id strin
 
 // openLedger opens the intent journal, honoring an override dir for tests.
 func (a *app) openLedger() (*ledger.Ledger, error) {
-	dir := a.ledgerDir
-	if dir == "" {
-		d, err := ledger.DefaultDir()
-		if err != nil {
-			return nil, err
-		}
-		dir = d
+	dir, err := a.ledgerDirectory()
+	if err != nil {
+		return nil, err
 	}
 	return ledger.Open(dir)
+}
+
+func (a *app) ledgerDirectory() (string, error) {
+	if a.ledgerDir != "" {
+		return a.ledgerDir, nil
+	}
+	return ledger.DefaultDir()
+}
+
+// acquireOpenOrdersLock serializes the max_open_orders count-check-send
+// sequence for one account across CLI processes.
+func (a *app) acquireOpenOrdersLock(accountID string) (io.Closer, error) {
+	dir, err := a.ledgerDirectory()
+	if err != nil {
+		return nil, err
+	}
+	return ledger.AcquireAccountLock(dir, accountID)
+}
+
+func replacementJournalPayload(
+	settings config.Settings,
+	key string,
+	replaces string,
+	quantity int64,
+	price string,
+	confirmMarginTrade bool,
+	createdAt time.Time,
+) orderPayload {
+	return orderPayload{
+		AccountID:          settings.AccountID,
+		Endpoint:           settings.Endpoint,
+		OrderID:            key,
+		Replaces:           replaces,
+		Quantity:           quantity,
+		Price:              price,
+		CreatedAt:          createdAt.UTC().Format(time.RFC3339),
+		ConfirmMarginTrade: confirmMarginTrade,
+	}
+}
+
+func scopedBrokerCommand(profile, accountID string, args ...string) string {
+	parts := []string{"tinvest"}
+	if profile != "" {
+		parts = append(parts, "--profile", shellCommandArg(profile))
+	}
+	if accountID != "" {
+		parts = append(parts, "--account", shellCommandArg(accountID))
+	}
+	for _, arg := range args {
+		parts = append(parts, shellCommandArg(arg))
+	}
+	return strings.Join(parts, " ")
+}
+
+func shellCommandArg(arg string) string {
+	safe := func(r rune) bool {
+		return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || strings.ContainsRune("_./:@+-", r)
+	}
+	if arg != "" && strings.IndexFunc(arg, func(r rune) bool { return !safe(r) }) == -1 {
+		return arg
+	}
+	return "'" + strings.ReplaceAll(arg, "'", "'\"'\"'") + "'"
 }
 
 // newOrderID generates a random RFC 4122 v4 UUID using crypto/rand (no external

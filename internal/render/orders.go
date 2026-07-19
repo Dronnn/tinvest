@@ -181,6 +181,10 @@ type ReconcileOutcomeView struct {
 	// that a "placed" match is heuristic (no client-id correlation), see the
 	// stop-order reconcile path. Empty for outcomes that need no caveat.
 	Note string `json:"note,omitempty"`
+	// LedgerWriteFailed is command-local control state: broker truth was found,
+	// but persisting the reconciled stage failed, so the run must exit non-zero.
+	// It is represented by Note and unresolved_count, not a new JSON field.
+	LedgerWriteFailed bool `json:"-"`
 }
 
 // ReconcileTable renders reconcile outcomes for humans.

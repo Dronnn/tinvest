@@ -1,14 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	investapi "tinvest/internal/pb/investapi"
 	"tinvest/internal/render"
+	streamrunner "tinvest/internal/stream"
 )
 
 func TestStreamValidationFailureIsOneNDJSONEvent(t *testing.T) {
@@ -119,6 +123,84 @@ func TestSubscriptionCapFailsBeforeTokenOrBrokerCall(t *testing.T) {
 	}
 	if !strings.Contains(output, "too many subscriptions") || strings.Contains(output, "no token configured") {
 		t.Fatalf("output = %q, want local cap validation before auth", output)
+	}
+}
+
+func TestTimestampLessOrderBookSnapshotKeepsAllLiveFrames(t *testing.T) {
+	var output bytes.Buffer
+	writer := render.NewNDJSONWriter(&output)
+	first := &investapi.MarketDataResponse{
+		Payload: &investapi.MarketDataResponse_Orderbook{Orderbook: &investapi.OrderBook{InstrumentUid: "uid-1", Depth: 10}},
+	}
+	second := &investapi.MarketDataResponse{
+		Payload: &investapi.MarketDataResponse_Orderbook{Orderbook: &investapi.OrderBook{InstrumentUid: "uid-1", Depth: 20}},
+	}
+	firstDelivered := make(chan struct{})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	index := 0
+	runner := streamrunner.Runner[investapi.MarketDataRequest, investapi.MarketDataResponse]{
+		Open: func(streamCtx context.Context) (streamrunner.Session[investapi.MarketDataRequest, investapi.MarketDataResponse], error) {
+			return streamrunner.Session[investapi.MarketDataRequest, investapi.MarketDataResponse]{Recv: func() (*investapi.MarketDataResponse, error) {
+				switch index {
+				case 0:
+					index++
+					return first, nil
+				case 1:
+					<-firstDelivered
+					index++
+					return second, nil
+				default:
+					<-streamCtx.Done()
+					return nil, streamCtx.Err()
+				}
+			}}, nil
+		},
+		Watchdog: time.Second,
+		OnMessage: func(response *investapi.MarketDataResponse) error {
+			if err := writer.Write(render.MarketDataStreamEvent(response, time.Now())); err != nil {
+				return err
+			}
+			if response == first {
+				close(firstDelivered)
+			}
+			if response == second {
+				cancel()
+			}
+			return nil
+		},
+	}
+	configureOrderBookReconciliation(
+		&runner, []string{"uid-1"}, 20,
+		func(context.Context, string, int32) (*investapi.GetOrderBookResponse, error) {
+			// Leave time for the first frame to enter the runner's reconciliation
+			// buffer, so the test exercises both buffered and later live filtering.
+			time.Sleep(20 * time.Millisecond)
+			return &investapi.GetOrderBookResponse{InstrumentUid: "uid-1", Depth: 20}, nil
+		},
+		func(snapshot *investapi.GetOrderBookResponse) error {
+			return writer.Write(render.NewStreamEvent("snapshot", time.Now(), render.OrderBook(snapshot)))
+		},
+	)
+	if err := runner.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("output has %d events, want snapshot plus two order books: %s", len(lines), output.String())
+	}
+	wantTypes := []string{"snapshot", "orderbook", "orderbook"}
+	for i, line := range lines {
+		var event struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("event %d is invalid JSON: %v", i, err)
+		}
+		if event.Type != wantTypes[i] {
+			t.Fatalf("event %d type = %q, want %q; output: %s", i, event.Type, wantTypes[i], output.String())
+		}
 	}
 }
 

@@ -77,23 +77,29 @@ type TokenError struct{ err error }
 func (e *TokenError) Error() string { return e.err.Error() }
 func (e *TokenError) Unwrap() error { return e.err }
 
-// Path returns the config file location, honoring XDG_CONFIG_HOME.
-func Path() string {
+// Path returns the config file location, honoring XDG_CONFIG_HOME. Resolving
+// the default path is fail-closed: without an XDG directory or resolvable home
+// directory the caller cannot know whether a guardrail-bearing config exists.
+func Path() (string, error) {
 	dir := os.Getenv("XDG_CONFIG_HOME")
 	if dir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return ""
+			return "", fmt.Errorf("resolve config home directory: %w", err)
 		}
 		dir = filepath.Join(home, ".config")
 	}
-	return filepath.Join(dir, "tinvest", "config.toml")
+	return filepath.Join(dir, "tinvest", "config.toml"), nil
 }
 
 // Load resolves the effective settings. A missing config file is not an
 // error: defaults apply (prod endpoint, auto output, token from env).
 func Load(flags Flags) (Settings, error) {
-	file, err := readFile(Path())
+	path, err := Path()
+	if err != nil {
+		return Settings{}, err
+	}
+	file, err := readFile(path)
 	if err != nil {
 		return Settings{}, err
 	}
@@ -103,7 +109,7 @@ func Load(flags Flags) (Settings, error) {
 	if name != "" {
 		p, ok := file.Profiles[name]
 		if !ok {
-			return Settings{}, fmt.Errorf("profile %q not found in %s", name, Path())
+			return Settings{}, fmt.Errorf("profile %q not found in %s", name, path)
 		}
 		profile = p
 	}
@@ -144,7 +150,7 @@ func Load(flags Flags) (Settings, error) {
 func readFile(path string) (File, error) {
 	var file File
 	if path == "" {
-		return file, nil
+		return file, errors.New("config path is empty")
 	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {

@@ -235,6 +235,12 @@ func (a *app) runPlaceStop(cmd *cobra.Command, f *stopPlaceFlags) error {
 	// policy knob limits each order book independently (finding F13). A breach is
 	// exit 2 (POLICY), before the placement mutation.
 	if pol != nil && pol.MaxOpenOrders > 0 {
+		openOrdersLock, err := a.acquireOpenOrdersLock(settings.AccountID)
+		if err != nil {
+			return a.fail(mode, &render.CLIError{Code: render.CodeInternal, Message: fmt.Sprintf("lock max_open_orders check: %v", err)}, render.NewMeta(settings.AccountID, "", time.Since(start)))
+		}
+		defer func() { _ = openOrdersLock.Close() }()
+
 		ctx, info := transport.WithCallInfo(cmd.Context())
 		open, err := stoporders.New(conn).List(ctx, stoporders.ListParams{
 			AccountID: settings.AccountID,
@@ -373,7 +379,10 @@ func placeStopExec(cmdCtx context.Context, cl stoporders.Client, led *ledger.Led
 	if err != nil {
 		cerr := render.Classify(err, cc)
 		if cerr.Code == render.CodeUnconfirmed {
-			cerr.ReconcileHint = &render.ReconcileHint{OrderID: p.OrderID, Command: stopReconcileCommand}
+			cerr.ReconcileHint = &render.ReconcileHint{
+				OrderID: p.OrderID,
+				Command: scopedBrokerCommand(intent.Profile, intent.AccountID, "stop-orders", "reconcile"),
+			}
 			return nil, info, cerr
 		}
 		warnJournalWrite("broker-rejected", stopReconcileCommand, entry.Rejected(err))
@@ -839,7 +848,8 @@ func (a *app) stopOrdersCancelCmd() *cobra.Command {
 						}, args[0], "was already settled")
 					}
 				}
-				return a.fail(mode, addCancelReconcileHint(cerr, args[0], "tinvest stop-orders list --status all"), meta)
+				command := scopedBrokerCommand(settings.Profile, settings.AccountID, "stop-orders", "list", "--status", "all")
+				return a.fail(mode, addCancelReconcileHint(cerr, args[0], command), meta)
 			}
 			data := cancelData{OrderID: args[0], Time: render.Timestamp(resp.GetTime())}
 			return emitMutationResult(func() error {
@@ -937,9 +947,21 @@ func reconcileStopFlowForTarget(
 	if err != nil {
 		return nil, &render.CLIError{Code: render.CodeInternal, Message: fmt.Sprintf("read journal: %v", err)}
 	}
+	assigned, err := led.AssignedStopOrderIDs(kindStopOrderPlace)
+	if err != nil {
+		return nil, &render.CLIError{Code: render.CodeInternal, Message: fmt.Sprintf("read stop-order assignments: %v", err)}
+	}
 
 	outcomes := make([]render.ReconcileOutcomeView, 0, len(entries))
 	listByAccount := map[string][]*investapi.StopOrder{}
+	consumedByAccount := map[string]map[string]struct{}{}
+	for accountID, stopOrderIDs := range assigned {
+		consumed := make(map[string]struct{}, len(stopOrderIDs))
+		for _, stopOrderID := range stopOrderIDs {
+			consumed[stopOrderID] = struct{}{}
+		}
+		consumedByAccount[accountID] = consumed
+	}
 
 	for _, e := range entries {
 		out := render.ReconcileOutcomeView{IntentID: e.IntentID(), ClientOrderID: e.OrderID(), AccountID: e.AccountID()}
@@ -1002,7 +1024,7 @@ func reconcileStopFlowForTarget(
 		case 0:
 			if e.Stage() == ledger.StageIntentCreated {
 				out.Outcome = "not-placed"
-				_ = e.Reconciled(ledger.Result{Error: "not-placed-before-send"})
+				recordReconciled(&out, e, ledger.Result{Error: "not-placed-before-send"})
 			} else {
 				out.Outcome = "indeterminate"
 				out.Error = "no exact stop-order match was found in status=ALL; the broker may have accepted and then executed, canceled, or expired it; check manually with `tinvest stop-orders list --status all` and retry reconcile later"
@@ -1013,11 +1035,23 @@ func reconcileStopFlowForTarget(
 				out.Error = "the only full-field stop-order match was created outside the expected time window, so correlating it to this intent would be unsafe; check manually with `tinvest stop-orders list --status all` and retry reconcile later"
 				break
 			}
+			stopOrderID := matches[0].GetStopOrderId()
+			consumed := consumedByAccount[e.AccountID()]
+			if consumed == nil {
+				consumed = map[string]struct{}{}
+				consumedByAccount[e.AccountID()] = consumed
+			}
+			if _, alreadyAssigned := consumed[stopOrderID]; alreadyAssigned {
+				out.Outcome = "unresolved"
+				out.Note = fmt.Sprintf("the only exact stop-order match %s was already assigned to another intent", stopOrderID)
+				break
+			}
+			consumed[stopOrderID] = struct{}{}
 			out.Outcome = "placed"
-			out.OrderID = matches[0].GetStopOrderId()
+			out.OrderID = stopOrderID
 			out.Lifecycle = stoporders.StatusName(matches[0].GetStatus())
 			out.Note = "correlation is heuristic: stop orders carry no client id, so this is a full-field match within the creation window, not an idempotency-key match"
-			_ = e.Reconciled(ledger.Result{StopOrderID: matches[0].GetStopOrderId()})
+			recordReconciled(&out, e, ledger.Result{StopOrderID: stopOrderID})
 		default:
 			out.Outcome = "ambiguous"
 			out.Error = fmt.Sprintf("%d candidate stop orders match this intent; resolve manually with `tinvest stop-orders list --status all`", len(matches))

@@ -96,7 +96,11 @@ func Load(path string) (*Policy, error) {
 	if path == "" {
 		return nil, nil
 	}
-	path = expandHome(path)
+	var err error
+	path, err = expandHome(path)
+	if err != nil {
+		return nil, fmt.Errorf("policy: %w", err)
+	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("policy: file %s not found", path)
@@ -137,6 +141,10 @@ func Load(path string) (*Policy, error) {
 		}
 	}
 
+	killSwitchFile, err := expandHome(f.KillSwitchFile)
+	if err != nil {
+		return nil, fmt.Errorf("policy: resolve kill_switch_file: %w", err)
+	}
 	p := &Policy{
 		AllowedInstruments:  f.AllowedInstruments,
 		MaxLotsPerOrder:     f.MaxLotsPerOrder,
@@ -145,7 +153,7 @@ func Load(path string) (*Policy, error) {
 		MaxOpenOrders:       f.MaxOpenOrders,
 		AllowMarketOrders:   f.AllowMarketOrders,
 		AllowShorts:         f.AllowShorts,
-		KillSwitchFile:      expandHome(f.KillSwitchFile),
+		KillSwitchFile:      killSwitchFile,
 		present:             true,
 	}
 	return p, nil
@@ -208,17 +216,23 @@ func (p *Policy) CheckKillSwitch() *Violation {
 	if p == nil || p.KillSwitchFile == "" {
 		return nil
 	}
-	switch _, err := os.Lstat(p.KillSwitchFile); {
+	path, expandErr := expandHome(p.KillSwitchFile)
+	if expandErr != nil {
+		return newViolation("kill_switch",
+			fmt.Sprintf("kill switch path cannot be resolved: %v; refusing to proceed", expandErr),
+			"kill_switch_file", p.KillSwitchFile, "error", expandErr.Error())
+	}
+	switch _, err := os.Lstat(path); {
 	case err == nil:
 		return newViolation("kill_switch",
-			fmt.Sprintf("kill switch engaged: %s exists, all mutations blocked", p.KillSwitchFile),
-			"kill_switch_file", p.KillSwitchFile)
+			fmt.Sprintf("kill switch engaged: %s exists, all mutations blocked", path),
+			"kill_switch_file", path)
 	case errors.Is(err, os.ErrNotExist):
 		return nil
 	default:
 		return newViolation("kill_switch",
-			fmt.Sprintf("kill switch check failed for %s: %v; refusing to proceed", p.KillSwitchFile, err),
-			"kill_switch_file", p.KillSwitchFile, "error", err.Error())
+			fmt.Sprintf("kill switch check failed for %s: %v; refusing to proceed", path, err),
+			"kill_switch_file", path, "error", err.Error())
 	}
 }
 
@@ -388,11 +402,13 @@ func orDefault(v, fallback string) string {
 	return fallback
 }
 
-func expandHome(path string) string {
-	if strings.HasPrefix(path, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, path[2:])
-		}
+func expandHome(path string) (string, error) {
+	if !strings.HasPrefix(path, "~/") {
+		return path, nil
 	}
-	return path
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory for %q: %w", path, err)
+	}
+	return filepath.Join(home, path[2:]), nil
 }

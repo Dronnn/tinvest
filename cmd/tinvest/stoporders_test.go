@@ -222,8 +222,9 @@ func TestStopPlaceAmbiguousExitSevenThenReconcile(t *testing.T) {
 	if cerr.ReconcileHint == nil || cerr.ReconcileHint.OrderID != "stop-ambiguous" {
 		t.Fatalf("reconcile hint = %+v, want stop-ambiguous", cerr.ReconcileHint)
 	}
-	if cerr.ReconcileHint.Command != stopReconcileCommand {
-		t.Errorf("reconcile command = %q, want %q", cerr.ReconcileHint.Command, stopReconcileCommand)
+	wantCommand := "tinvest --profile test --account acc-1 stop-orders reconcile"
+	if cerr.ReconcileHint.Command != wantCommand {
+		t.Errorf("reconcile command = %q, want %q", cerr.ReconcileHint.Command, wantCommand)
 	}
 
 	unresolved, err := led.Unresolved()
@@ -311,6 +312,63 @@ func TestReconcileStopAmbiguousLeavesUnresolved(t *testing.T) {
 	after, _ := led.Unresolved()
 	if len(after) != 1 {
 		t.Errorf("ambiguous entry must remain unresolved, got %d unresolved", len(after))
+	}
+}
+
+func TestStopReconcileDoesNotAssignOneBrokerOrderToTwoIntents(t *testing.T) {
+	led := testLedger(t)
+	created := time.Now().UTC().Truncate(time.Second)
+	for i, id := range []string{"stop-intent-one", "stop-intent-two"} {
+		intent, _ := stopPlaceIntent(id)
+		payload := intent.Payload.(stopOrderPayload)
+		payload.CreatedAt = created.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano)
+		intent.Payload = payload
+		entry, err := led.Begin(intent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := entry.SendStarted(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fake := &fakeStopOrders{listResp: []*investapi.StopOrder{{
+		StopOrderId: "only-broker-stop", InstrumentUid: "uid-1",
+		Direction:     investapi.StopOrderDirection_STOP_ORDER_DIRECTION_BUY,
+		OrderType:     investapi.StopOrderType_STOP_ORDER_TYPE_STOP_LOSS,
+		LotsRequested: 1, StopPrice: &investapi.MoneyValue{Units: 100},
+		CreateDate: timestamppb.New(created.Add(10 * time.Second)),
+		Status:     investapi.StopOrderStatusOption_STOP_ORDER_STATUS_ACTIVE,
+	}}}
+	client := stoporders.New(newStopOrdersConn(t, fake))
+	outcomes, cerr := reconcileStopFlowForTarget(
+		context.Background(), client, led,
+		reconcileTarget{Profile: "test", Endpoint: testEndpoint},
+	)
+	if cerr != nil {
+		t.Fatalf("reconcile: %+v", cerr)
+	}
+	if len(outcomes) != 2 {
+		t.Fatalf("outcomes = %+v, want two", outcomes)
+	}
+	if outcomes[0].Outcome != "placed" || outcomes[0].OrderID != "only-broker-stop" {
+		t.Fatalf("first outcome = %+v, want placed", outcomes[0])
+	}
+	if outcomes[1].Outcome != "unresolved" || !strings.Contains(outcomes[1].Note, "already") {
+		t.Fatalf("second outcome = %+v, want unresolved with already-consumed note", outcomes[1])
+	}
+
+	// A later reconcile run must not forget the durable assignment and give the
+	// same broker stop order to the one intent that remains unresolved.
+	again, cerr := reconcileStopFlowForTarget(
+		context.Background(), client, led,
+		reconcileTarget{Profile: "test", Endpoint: testEndpoint},
+	)
+	if cerr != nil {
+		t.Fatalf("second reconcile: %+v", cerr)
+	}
+	if len(again) != 1 || again[0].Outcome != "unresolved" || !strings.Contains(again[0].Note, "already") {
+		t.Fatalf("second reconcile outcomes = %+v, want the remaining intent unresolved with already-consumed note", again)
 	}
 }
 

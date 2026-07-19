@@ -20,6 +20,16 @@ func clearEnv(t *testing.T) {
 	}
 }
 
+func clearHomeEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{"HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "home"} {
+		t.Setenv(key, "")
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func writeConfig(t *testing.T, content string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -360,5 +370,18 @@ func TestUnknownConfigKeyRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "policy_fil") {
 		t.Errorf("error should name the unknown key, got: %v", err)
+	}
+}
+
+func TestLoadFailsWhenConfigHomeCannotBeResolved(t *testing.T) {
+	clearEnv(t)
+	clearHomeEnv(t)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	if err := os.Unsetenv("XDG_CONFIG_HOME"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(Flags{}); err == nil {
+		t.Fatal("Load succeeded without HOME or XDG_CONFIG_HOME; config guardrails were silently skipped")
 	}
 }

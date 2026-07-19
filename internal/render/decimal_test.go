@@ -100,7 +100,7 @@ func TestParseQuotationRoundTrip(t *testing.T) {
 }
 
 func TestParseQuotationErrors(t *testing.T) {
-	for _, s := range []string{"", "abc", "1.2.3", "1.2345678901", "  "} {
+	for _, s := range []string{"", "abc", "1.2.3", "1.2345678901", "1.-5", "1.+5", ".", "+", "-", "++1", "--1", "+-1", "-+1", "  "} {
 		if _, err := ParseQuotation(s); err == nil {
 			t.Errorf("ParseQuotation(%q) should error", s)
 		}

@@ -86,67 +86,12 @@ func (a *app) streamMarketDataCmd() *cobra.Command {
 				},
 			}
 			if orderbook != 0 {
-				orderBookCutoffs := make(map[string]time.Time, len(uids))
-				missingCutoffs := make(map[string]bool, len(uids))
-				runner.Reconcile = func(ctx context.Context) error {
-					cutoffs := make(map[string]time.Time, len(uids))
-					missing := make(map[string]bool, len(uids))
-					for _, uid := range uids {
-						snapshot, err := client.OrderBookSnapshot(ctx, uid, orderbook)
-						if err != nil {
-							return err
-						}
-						if timestamp := snapshot.GetOrderbookTs(); timestamp != nil {
-							cutoffs[uid] = timestamp.AsTime()
-						} else {
-							missing[uid] = true
-						}
-						if err := writer.Write(render.NewStreamEvent("snapshot", time.Now(), render.OrderBook(snapshot))); err != nil {
-							return err
-						}
-					}
-					orderBookCutoffs = cutoffs
-					missingCutoffs = missing
-					return nil
-				}
-				runner.BufferDuringReconcile = func(response *investapi.MarketDataResponse) bool {
-					return response.GetOrderbook() != nil
-				}
-				runner.KeepAfterReconcile = func(response *investapi.MarketDataResponse) bool {
-					book := response.GetOrderbook()
-					if book == nil {
-						return true
-					}
-					uid := book.GetInstrumentUid()
-					if missingCutoffs[uid] || book.GetTime() == nil {
-						return false
-					}
-					cutoff, found := orderBookCutoffs[uid]
-					if !found {
-						return true
-					}
-					return book.GetTime().AsTime().After(cutoff)
-				}
-				runner.KeepLiveAfterReconcile = func(response *investapi.MarketDataResponse) bool {
-					book := response.GetOrderbook()
-					if book == nil {
-						return true
-					}
-					uid := book.GetInstrumentUid()
-					if missingCutoffs[uid] {
-						delete(missingCutoffs, uid)
-						return false
-					}
-					cutoff, found := orderBookCutoffs[uid]
-					if !found {
-						return true
-					}
-					if book.GetTime() == nil {
-						delete(orderBookCutoffs, uid)
-						return false
-					}
-					return book.GetTime().AsTime().After(cutoff)
-				}
+				configureOrderBookReconciliation(
+					&runner, uids, orderbook, client.OrderBookSnapshot,
+					func(snapshot *investapi.GetOrderBookResponse) error {
+						return writer.Write(render.NewStreamEvent("snapshot", time.Now(), render.OrderBook(snapshot)))
+					},
+				)
 			}
 			return a.runStream(cmd.Context(), writer, settings.AccountID, runner.Run)
 		},
@@ -160,6 +105,74 @@ func (a *app) streamMarketDataCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&lastPrice, "last-price", false, "stream last prices")
 	cmd.Flags().BoolVar(&info, "info", false, "stream trading status")
 	return cmd
+}
+
+func configureOrderBookReconciliation(
+	runner *streamrunner.Runner[investapi.MarketDataRequest, investapi.MarketDataResponse],
+	uids []string,
+	depth int32,
+	snapshot func(context.Context, string, int32) (*investapi.GetOrderBookResponse, error),
+	writeSnapshot func(*investapi.GetOrderBookResponse) error,
+) {
+	orderBookCutoffs := make(map[string]time.Time, len(uids))
+	missingCutoffs := make(map[string]bool, len(uids))
+	runner.Reconcile = func(ctx context.Context) error {
+		cutoffs := make(map[string]time.Time, len(uids))
+		missing := make(map[string]bool, len(uids))
+		for _, uid := range uids {
+			book, err := snapshot(ctx, uid, depth)
+			if err != nil {
+				return err
+			}
+			if timestamp := book.GetOrderbookTs(); timestamp != nil {
+				cutoffs[uid] = timestamp.AsTime()
+			} else {
+				missing[uid] = true
+			}
+			if err := writeSnapshot(book); err != nil {
+				return err
+			}
+		}
+		orderBookCutoffs = cutoffs
+		missingCutoffs = missing
+		return nil
+	}
+	runner.BufferDuringReconcile = func(response *investapi.MarketDataResponse) bool {
+		return response.GetOrderbook() != nil
+	}
+	runner.KeepAfterReconcile = func(response *investapi.MarketDataResponse) bool {
+		return keepOrderBookFrameAfterSnapshot(response, orderBookCutoffs, missingCutoffs, false)
+	}
+	runner.KeepLiveAfterReconcile = func(response *investapi.MarketDataResponse) bool {
+		return keepOrderBookFrameAfterSnapshot(response, orderBookCutoffs, missingCutoffs, true)
+	}
+}
+
+func keepOrderBookFrameAfterSnapshot(
+	response *investapi.MarketDataResponse,
+	cutoffs map[string]time.Time,
+	missingCutoffs map[string]bool,
+	live bool,
+) bool {
+	book := response.GetOrderbook()
+	if book == nil {
+		return true
+	}
+	uid := book.GetInstrumentUid()
+	if missingCutoffs[uid] {
+		return true
+	}
+	cutoff, found := cutoffs[uid]
+	if !found {
+		return true
+	}
+	if book.GetTime() == nil {
+		if live {
+			delete(cutoffs, uid)
+		}
+		return false
+	}
+	return book.GetTime().AsTime().After(cutoff)
 }
 
 func (a *app) streamPortfolioCmd() *cobra.Command {

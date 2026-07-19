@@ -50,6 +50,8 @@ type fakeOrders struct {
 	listErr         error
 	getOrdersReqs   []*investapi.GetOrdersRequest
 	todayOnlyOrders []*investapi.OrderState // returned only when advanced_filters is set (ListToday)
+	cancelReplies   []cancelReply
+	cancelCalls     int
 
 	previewResp *investapi.GetOrderPriceResponse
 	maxLotsResp *investapi.GetMaxLotsResponse
@@ -58,6 +60,11 @@ type fakeOrders struct {
 type orderStateReply struct {
 	state *investapi.OrderState
 	err   error
+}
+
+type cancelReply struct {
+	response *investapi.CancelOrderResponse
+	err      error
 }
 
 func (f *fakeOrders) PostOrder(ctx context.Context, req *investapi.PostOrderRequest) (*investapi.PostOrderResponse, error) {
@@ -110,6 +117,18 @@ func (f *fakeOrders) GetOrderState(_ context.Context, req *investapi.GetOrderSta
 		return f.stateResp, nil
 	}
 	return nil, status.Error(codes.NotFound, "70001")
+}
+
+func (f *fakeOrders) CancelOrder(_ context.Context, _ *investapi.CancelOrderRequest) (*investapi.CancelOrderResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cancelCalls++
+	if len(f.cancelReplies) == 0 {
+		return nil, status.Error(codes.NotFound, "not found")
+	}
+	reply := f.cancelReplies[0]
+	f.cancelReplies = f.cancelReplies[1:]
+	return reply.response, reply.err
 }
 
 func TestOrdersReconcileSkipsForeignKindsAndReportsThem(t *testing.T) {
@@ -624,6 +643,9 @@ func TestPlaceAmbiguousExitSevenThenReconcile(t *testing.T) {
 	if cerr.ReconcileHint == nil || cerr.ReconcileHint.OrderID != "order-ambiguous" {
 		t.Fatalf("reconcile hint = %+v, want order-ambiguous", cerr.ReconcileHint)
 	}
+	if want := "tinvest --profile test --account acc-1 orders reconcile"; cerr.ReconcileHint.Command != want {
+		t.Fatalf("reconcile command = %q, want %q", cerr.ReconcileHint.Command, want)
+	}
 
 	// The ledger must hold the unresolved intent with its order_id.
 	unresolved, err := led.Unresolved()
@@ -661,6 +683,40 @@ func TestPlaceAmbiguousExitSevenThenReconcile(t *testing.T) {
 	after, _ := led.Unresolved()
 	if len(after) != 0 {
 		t.Errorf("want 0 unresolved after reconcile, got %d", len(after))
+	}
+}
+
+func TestIntentCreatedOrdersReconcileNotPlacedWithoutBrokerCalls(t *testing.T) {
+	for _, async := range []bool{false, true} {
+		t.Run(map[bool]string{false: "sync", true: "async"}[async], func(t *testing.T) {
+			led := testLedger(t)
+			intent, _ := placeIntent("created-only")
+			payload := intent.Payload.(orderPayload)
+			payload.Async = async
+			intent.Payload = payload
+			if _, err := led.Begin(intent); err != nil {
+				t.Fatal(err)
+			}
+
+			fake := &fakeOrders{stateErr: status.Error(codes.NotFound, "not sent")}
+			outcomes, cerr := reconcileFlowForTarget(
+				context.Background(), orders.New(newOrdersConn(t, fake)), led,
+				reconcileTarget{Profile: "test", Endpoint: testEndpoint},
+				reconcileOptions{SyncNotFoundDelay: 0},
+			)
+			if cerr != nil {
+				t.Fatalf("reconcile: %+v", cerr)
+			}
+			if len(outcomes) != 1 || outcomes[0].Outcome != "not-placed" {
+				t.Fatalf("outcomes = %+v, want not-placed", outcomes)
+			}
+			fake.mu.Lock()
+			stateCalls, listCalls := fake.stateCalls, len(fake.getOrdersReqs)
+			fake.mu.Unlock()
+			if stateCalls != 0 || listCalls != 0 {
+				t.Fatalf("broker calls: GetOrderState=%d GetOrders=%d, want zero", stateCalls, listCalls)
+			}
+		})
 	}
 }
 

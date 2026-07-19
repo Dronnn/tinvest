@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -85,7 +86,32 @@ func (c *Cache) Get(key string) (*investapi.Instrument, bool) {
 	if c.clock().Sub(entry.CachedAt) > c.ttl {
 		return nil, false
 	}
+	if !cacheEntryMatchesKey(key, entry.Instrument) {
+		return nil, false
+	}
 	return entry.Instrument, true
+}
+
+func cacheEntryMatchesKey(key string, inst *investapi.Instrument) bool {
+	if inst == nil {
+		return false
+	}
+	parsed, err := Classify(key)
+	if err != nil {
+		return false
+	}
+	switch parsed.Kind {
+	case KindUID:
+		return inst.GetUid() != "" && parsed.Raw == inst.GetUid()
+	case KindFIGI:
+		return inst.GetFigi() != "" && parsed.Raw == inst.GetFigi()
+	case KindTicker:
+		return inst.GetTicker() != "" && inst.GetClassCode() != "" &&
+			strings.EqualFold(parsed.Ticker, inst.GetTicker()) &&
+			strings.EqualFold(parsed.ClassCode, inst.GetClassCode())
+	default:
+		return false
+	}
 }
 
 // Put stores a successful resolution under key. Writes are atomic (write a

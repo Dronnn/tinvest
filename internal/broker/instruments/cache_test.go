@@ -44,6 +44,76 @@ func TestCacheMissForUnknownKey(t *testing.T) {
 	}
 }
 
+func TestCacheRejectsEntriesThatContradictTheirLookupKey(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		inst *investapi.Instrument
+	}{
+		{
+			name: "uid", key: "e6123145-9665-43e0-8413-cd61b8aa9b13",
+			inst: &investapi.Instrument{Uid: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"},
+		},
+		{
+			name: "figi", key: "BBG004730N88",
+			inst: &investapi.Instrument{Figi: "BBG000000000"},
+		},
+		{
+			name: "ticker and class code", key: "SBER@TQBR",
+			inst: &investapi.Instrument{Ticker: "GAZP", ClassCode: "TQBR"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cache := NewCache(filepath.Join(t.TempDir(), "instruments.json"), 24*time.Hour, nil)
+			if err := cache.Put(tt.key, tt.inst); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			if got, ok := cache.Get(tt.key); ok {
+				t.Fatalf("Get returned contradictory entry %+v", got)
+			}
+		})
+	}
+}
+
+func TestCacheLookupKeyValidationIsCaseInsensitive(t *testing.T) {
+	cache := NewCache(filepath.Join(t.TempDir(), "instruments.json"), 24*time.Hour, nil)
+	if err := cache.Put("sber@tqbr", &investapi.Instrument{Ticker: "SBER", ClassCode: "TQBR"}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if _, ok := cache.Get("sber@tqbr"); !ok {
+		t.Fatal("case-only differences should not invalidate a matching cache entry")
+	}
+}
+
+func TestCacheUIDAndFIGIValidationIsCaseSensitive(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		inst *investapi.Instrument
+	}{
+		{
+			name: "uid", key: "e6123145-9665-43e0-8413-cd61b8aa9b13",
+			inst: &investapi.Instrument{Uid: "E6123145-9665-43E0-8413-CD61B8AA9B13"},
+		},
+		{
+			name: "figi", key: "BBG004730N88",
+			inst: &investapi.Instrument{Figi: "bbg004730n88"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cache := NewCache(filepath.Join(t.TempDir(), "instruments.json"), 24*time.Hour, nil)
+			if err := cache.Put(tt.key, tt.inst); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			if got, ok := cache.Get(tt.key); ok {
+				t.Fatalf("Get returned case-mismatched entry %+v", got)
+			}
+		})
+	}
+}
+
 func TestCacheTTLExpiry(t *testing.T) {
 	clock := &fakeClock{now: time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)}
 	path := filepath.Join(t.TempDir(), "instruments.json")
@@ -91,7 +161,9 @@ func TestCachePersistsAcrossInstances(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "instruments.json")
 
 	first := NewCache(path, 24*time.Hour, clock.Now)
-	if err := first.Put("BBG004730N88", testInstrument("uid-2")); err != nil {
+	consistent := testInstrument("uid-2")
+	consistent.Figi = "BBG004730N88"
+	if err := first.Put("BBG004730N88", consistent); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 

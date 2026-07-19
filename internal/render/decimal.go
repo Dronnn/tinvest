@@ -100,10 +100,23 @@ func ParseQuotation(s string) (*investapi.Quotation, error) {
 		fracPart = trimmed[dot+1:]
 	}
 	if intPart == "" {
+		if fracPart == "" {
+			return nil, fmt.Errorf("invalid decimal %q", s)
+		}
 		intPart = "0"
+	}
+	for i := 0; i < len(intPart); i++ {
+		if intPart[i] < '0' || intPart[i] > '9' {
+			return nil, fmt.Errorf("invalid decimal %q: integer part must contain digits only", s)
+		}
 	}
 	if len(fracPart) > 9 {
 		return nil, fmt.Errorf("decimal %q has more than 9 fractional digits", s)
+	}
+	for i := 0; i < len(fracPart); i++ {
+		if fracPart[i] < '0' || fracPart[i] > '9' {
+			return nil, fmt.Errorf("invalid decimal %q: fractional part must contain digits only", s)
+		}
 	}
 
 	units, err := strconv.ParseInt(intPart, 10, 64)

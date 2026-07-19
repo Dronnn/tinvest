@@ -8,10 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"tinvest/internal/broker/orders"
 	"tinvest/internal/broker/stoporders"
+	"tinvest/internal/config"
 	"tinvest/internal/ledger"
 	investapi "tinvest/internal/pb/investapi"
 	"tinvest/internal/render"
@@ -71,6 +75,16 @@ func TestCancelSettledNote(t *testing.T) {
 			fake:   &fakeOrders{}, // GetOrderState returns NOT_FOUND
 			wantOK: false,
 		},
+		{
+			name: "terminal order visible only in the day list is a satisfied no-op",
+			fake: &fakeOrders{
+				stateErr: status.Error(codes.NotFound, "terminal state omitted"),
+				todayOnlyOrders: []*investapi.OrderState{{
+					OrderId: "exch-1", ExecutionReportStatus: investapi.OrderExecutionReportStatus_EXECUTION_REPORT_STATUS_CANCELLED,
+				}},
+			},
+			wantOK: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -83,6 +97,41 @@ func TestCancelSettledNote(t *testing.T) {
 				t.Errorf("note = %q, want it to explain the terminal no-op", note)
 			}
 		})
+	}
+}
+
+func TestCancelRetryNotFoundUsesTerminalDayListAndExitsZero(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv(config.EnvToken, "test-token")
+	fake := &fakeOrders{
+		cancelReplies: []cancelReply{
+			{err: status.Error(codes.Unavailable, "cancel applied but response lost")},
+			{err: status.Error(codes.NotFound, "already removed from active orders")},
+		},
+		todayOnlyOrders: []*investapi.OrderState{{
+			OrderId: "exchange-1", ExecutionReportStatus: investapi.OrderExecutionReportStatus_EXECUTION_REPORT_STATUS_CANCELLED,
+		}},
+	}
+	conn := newOrdersConn(t, fake)
+	a := &app{connectOverride: func(context.Context, config.Settings) (*grpc.ClientConn, *render.CLIError) {
+		return conn, nil
+	}}
+	root := a.rootCmd()
+	root.SetArgs([]string{"--account", "acc-1", "--output", "json", "orders", "cancel", "exchange-1"})
+
+	var executionErr error
+	output := captureStdout(t, func() { executionErr = root.Execute() })
+	if executionErr != nil {
+		t.Fatalf("cancel command error = %v, output = %s", executionErr, output)
+	}
+	fake.mu.Lock()
+	cancelCalls := fake.cancelCalls
+	fake.mu.Unlock()
+	if cancelCalls != 2 {
+		t.Fatalf("CancelOrder calls = %d, want 2 (Unavailable retry then NotFound)", cancelCalls)
+	}
+	if !strings.Contains(output, `"ok": true`) || !strings.Contains(output, `"note": "order was already terminal`) {
+		t.Fatalf("output = %s, want successful settled-note envelope", output)
 	}
 }
 

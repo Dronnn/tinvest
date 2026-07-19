@@ -33,6 +33,9 @@ type app struct {
 	// ledgerDir overrides the intent-journal directory; empty means
 	// ledger.DefaultDir. Set by tests to an isolated temp dir.
 	ledgerDir string
+	// connectOverride supplies an in-process broker connection in command-flow
+	// tests. Production leaves it nil and always uses transport.Dial.
+	connectOverride func(context.Context, config.Settings) (*grpc.ClientConn, *render.CLIError)
 }
 
 const tariffRefreshTimeout = time.Second
@@ -166,6 +169,9 @@ func (a *app) settings() (config.Settings, *render.CLIError) {
 func (a *app) connect(ctx context.Context, settings config.Settings) (*grpc.ClientConn, *render.CLIError) {
 	if settings.Token == "" {
 		return nil, render.AuthError("no token configured: set TINVEST_TOKEN, use --token-file, or configure token_file in a profile")
+	}
+	if a.connectOverride != nil {
+		return a.connectOverride(ctx, settings)
 	}
 	// The default retry policy is enabled for every connection: reads retry
 	// automatically, mutations only when the call site opts in via
