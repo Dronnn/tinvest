@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	brokerinstruments "tinvest/internal/broker/instruments"
@@ -227,6 +229,25 @@ func (a *app) runPlaceStop(cmd *cobra.Command, f *stopPlaceFlags) error {
 		}
 	}
 
+	// Enforce the shared open-order cap before placing (needs a read). Stop
+	// orders are counted against max_open_orders within their own book — active
+	// stop orders here, active regular orders in `orders place` — so the same
+	// policy knob limits each order book independently (finding F13). A breach is
+	// exit 2 (POLICY), before the placement mutation.
+	if pol != nil && pol.MaxOpenOrders > 0 {
+		ctx, info := transport.WithCallInfo(cmd.Context())
+		open, err := stoporders.New(conn).List(ctx, stoporders.ListParams{
+			AccountID: settings.AccountID,
+			Status:    investapi.StopOrderStatusOption_STOP_ORDER_STATUS_ACTIVE,
+		})
+		if err != nil {
+			return a.fail(mode, render.Classify(err, callContext(info, false)), render.NewMeta(settings.AccountID, info.TrackingID(), time.Since(start)))
+		}
+		if v := pol.CheckOpenOrders(len(open)); v != nil {
+			return a.fail(mode, render.PolicyError(v.Message, v.Details), render.NewMeta(settings.AccountID, info.TrackingID(), time.Since(start)))
+		}
+	}
+
 	led, err := a.openLedger()
 	if err != nil {
 		return a.fail(mode, &render.CLIError{Code: render.CodeInternal, Message: err.Error()}, render.NewMeta(settings.AccountID, "", time.Since(start)))
@@ -271,10 +292,12 @@ func (a *app) runPlaceStop(cmd *cobra.Command, f *stopPlaceFlags) error {
 	}
 	view := render.PlaceStopResult(resp, rp.orderID)
 	data := stopPlaceData{StopOrder: &view}
-	if mode == "table" {
-		return render.Table(os.Stdout, []string{"STOP_ORDER_ID", "CLIENT_ORDER_ID"}, [][]string{{view.StopOrderID, view.ClientOrderID}})
-	}
-	return render.WriteJSON(os.Stdout, render.Success(data, meta))
+	return emitMutationResult(func() error {
+		if mode == "table" {
+			return render.Table(os.Stdout, []string{"STOP_ORDER_ID", "CLIENT_ORDER_ID"}, [][]string{{view.StopOrderID, view.ClientOrderID}})
+		}
+		return render.WriteJSON(os.Stdout, render.Success(data, meta))
+	}, rp.orderID, "was placed")
 }
 
 // stopPlaceData is the data block of a `stop-orders place` envelope.
@@ -353,11 +376,11 @@ func placeStopExec(cmdCtx context.Context, cl stoporders.Client, led *ledger.Led
 			cerr.ReconcileHint = &render.ReconcileHint{OrderID: p.OrderID, Command: stopReconcileCommand}
 			return nil, info, cerr
 		}
-		_ = entry.Rejected(err)
+		warnJournalWrite("broker-rejected", stopReconcileCommand, entry.Rejected(err))
 		return nil, info, cerr
 	}
 
-	_ = entry.Confirmed(ledger.Result{StopOrderID: resp.GetStopOrderId(), TrackingID: info.TrackingID()})
+	warnJournalWrite("broker-confirmed", stopReconcileCommand, entry.Confirmed(ledger.Result{StopOrderID: resp.GetStopOrderId(), TrackingID: info.TrackingID()}))
 	return resp, info, nil
 }
 
@@ -794,21 +817,69 @@ func (a *app) stopOrdersCancelCmd() *cobra.Command {
 			// CancelStopOrder is convergent when repeated (see
 			// stoporders.Client.Cancel's doc comment) — unlike Place, retry here
 			// is safe.
+			cl := stoporders.New(conn)
 			ctx, info := transport.WithCallInfo(retry.Idempotent(cmd.Context()))
-			resp, err := stoporders.New(conn).Cancel(ctx, settings.AccountID, args[0])
+			resp, err := cl.Cancel(ctx, settings.AccountID, args[0])
 			meta := render.NewMeta(settings.AccountID, info.TrackingID(), time.Since(start))
 			if err != nil {
 				cerr := render.Classify(err, callContext(info, true))
+				// A cancel retried after a successful first cancel (or of an
+				// already-executed/expired stop order) returns NOT_FOUND even
+				// though the requested end-state holds. Confirm the actual state
+				// against the status=ALL list before reporting a rejection; only a
+				// never-valid id stays exit 5 (finding F5).
+				if status.Code(err) == codes.NotFound {
+					if note, ok := stopCancelSettledNote(cmd.Context(), cl, settings.AccountID, args[0]); ok {
+						data := cancelData{OrderID: args[0], Note: note}
+						return emitMutationResult(func() error {
+							if mode == "table" {
+								return render.Table(os.Stdout, []string{"STOP_ORDER_ID", "NOTE"}, [][]string{{data.OrderID, data.Note}})
+							}
+							return render.WriteJSON(os.Stdout, render.Success(data, meta))
+						}, args[0], "was already settled")
+					}
+				}
 				return a.fail(mode, addCancelReconcileHint(cerr, args[0], "tinvest stop-orders list --status all"), meta)
 			}
 			data := cancelData{OrderID: args[0], Time: render.Timestamp(resp.GetTime())}
-			if mode == "table" {
-				return render.Table(os.Stdout, []string{"STOP_ORDER_ID", "CANCELLED_AT"}, [][]string{{data.OrderID, data.Time}})
-			}
-			return render.WriteJSON(os.Stdout, render.Success(data, meta))
+			return emitMutationResult(func() error {
+				if mode == "table" {
+					return render.Table(os.Stdout, []string{"STOP_ORDER_ID", "CANCELLED_AT"}, [][]string{{data.OrderID, data.Time}})
+				}
+				return render.WriteJSON(os.Stdout, render.Success(data, meta))
+			}, args[0], "was cancelled")
 		},
 	}
 	return cmd
+}
+
+// stopCancelSettledNote checks whether a stop order a cancel reported as
+// NOT_FOUND is in fact already terminal (the retry-after-success case, finding
+// F5). Stop orders are looked up by exchange id in the status=ALL list, since
+// CancelStopOrder returns only a timestamp. A match in a terminal status means
+// the requested end-state holds, so the cancel is a satisfied no-op (exit 0 with
+// a note). It returns false — keeping the exit-5 path — when the stop order is
+// still active, the id is absent from the list (never valid), or the lookup
+// failed.
+func stopCancelSettledNote(ctx context.Context, cl stoporders.Client, accountID, stopOrderID string) (string, bool) {
+	lctx, _ := transport.WithCallInfo(ctx)
+	list, err := cl.List(lctx, stoporders.ListParams{
+		AccountID: accountID,
+		Status:    investapi.StopOrderStatusOption_STOP_ORDER_STATUS_ALL,
+	})
+	if err != nil {
+		return "", false
+	}
+	for _, s := range list {
+		if s.GetStopOrderId() != stopOrderID {
+			continue
+		}
+		if stoporders.IsTerminalStatus(s.GetStatus()) {
+			return fmt.Sprintf("stop order was already terminal (%s); the cancel is a satisfied no-op", stoporders.StatusName(s.GetStatus())), true
+		}
+		return "", false
+	}
+	return "", false
 }
 
 // ---- reconcile ----
@@ -845,18 +916,17 @@ func (a *app) stopOrdersReconcileCmd() *cobra.Command {
 			if cerr != nil {
 				return a.fail(mode, cerr, meta)
 			}
-			if mode == "table" {
-				return reconcileTable(os.Stdout, outcomes)
-			}
-			return render.WriteJSON(os.Stdout, render.Success(newReconcileData(outcomes, reconcileCommand), meta))
+			return finishReconcile(mode, newReconcileData(outcomes, reconcileCommand), meta)
 		},
 	}
 }
 
 // reconcileStopFlowForTarget lists all stop-order statuses and matches every
-// available request field, including broker creation time. Sent intents with
-// no exact match remain unresolved because the broker may have accepted and
-// already removed the stop order from retained list history.
+// available request field. Because stop orders carry no client idempotency key,
+// a placed outcome requires a UNIQUE full-field match created inside the
+// expected window and is tagged with a heuristic-correlation note (finding F10);
+// non-unique, out-of-window, or absent matches stay unresolved, since the broker
+// may have accepted and already removed the stop order from retained history.
 func reconcileStopFlowForTarget(
 	ctx context.Context,
 	cl stoporders.Client,
@@ -923,6 +993,10 @@ func reconcileStopFlowForTarget(
 			listByAccount[e.AccountID()] = list
 		}
 
+		// Stop orders carry no client idempotency key, so a match is heuristic. It
+		// is only conclusive when it is UNIQUE across the whole status=ALL
+		// field-match set AND the matched order was created inside the expected
+		// window; anything non-unique or out-of-window stays unresolved (F10).
 		matches := matchStopOrders(list, payload)
 		switch len(matches) {
 		case 0:
@@ -934,9 +1008,15 @@ func reconcileStopFlowForTarget(
 				out.Error = "no exact stop-order match was found in status=ALL; the broker may have accepted and then executed, canceled, or expired it; check manually with `tinvest stop-orders list --status all` and retry reconcile later"
 			}
 		case 1:
+			if !stopCreationMatches(matches[0], payload.CreatedAt) {
+				out.Outcome = "unresolved"
+				out.Error = "the only full-field stop-order match was created outside the expected time window, so correlating it to this intent would be unsafe; check manually with `tinvest stop-orders list --status all` and retry reconcile later"
+				break
+			}
 			out.Outcome = "placed"
 			out.OrderID = matches[0].GetStopOrderId()
 			out.Lifecycle = stoporders.StatusName(matches[0].GetStatus())
+			out.Note = "correlation is heuristic: stop orders carry no client id, so this is a full-field match within the creation window, not an idempotency-key match"
 			_ = e.Reconciled(ledger.Result{StopOrderID: matches[0].GetStopOrderId()})
 		default:
 			out.Outcome = "ambiguous"
@@ -952,9 +1032,15 @@ const (
 	stopReconcileCreationWindow = 2 * time.Minute
 )
 
-// matchStopOrders finds every listed stop order consistent with all request
-// fields echoed by GetStopOrders, plus a bounded creation window around the
-// journaled intent time.
+// matchStopOrders returns every listed stop order whose full request field set
+// matches the journaled intent (everything GetStopOrders echoes: instrument,
+// direction, type, lots, prices, expiry, take-profit shape). Stop orders carry
+// no client idempotency key, so this match is heuristic. The creation window is
+// deliberately NOT applied here — the caller checks it separately — so
+// uniqueness is assessed across the whole status=ALL field-match set rather than
+// only the in-window subset, which is what makes a non-unique match (two
+// otherwise-identical stop orders) fail closed rather than silently pick one
+// (finding F10).
 func matchStopOrders(list []*investapi.StopOrder, p stopOrderPayload) []*investapi.StopOrder {
 	var out []*investapi.StopOrder
 	for _, s := range list {
@@ -980,9 +1066,6 @@ func matchStopOrders(list []*investapi.StopOrder, p stopOrderPayload) []*investa
 			continue
 		}
 		if !stopTakeProfitMatches(s, p) {
-			continue
-		}
-		if !stopCreationMatches(s, p.CreatedAt) {
 			continue
 		}
 		out = append(out, s)

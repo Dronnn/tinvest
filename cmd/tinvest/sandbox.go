@@ -61,6 +61,23 @@ func (a *app) checkSandboxKillSwitch(settings config.Settings) *render.CLIError 
 	return nil
 }
 
+// sandboxInspectCommand reveals the actual state after a sandbox mutation whose
+// outcome is unknown.
+const sandboxInspectCommand = "tinvest sandbox accounts"
+
+// sandboxUnknownStateGuidance augments an unconfirmed-state (exit 7) sandbox
+// mutation error with explicit recovery guidance. Sandbox mutations are not
+// journaled and have no reconcile command, so rather than leaving a dangling
+// unknown the envelope points the caller at a read that reveals the actual state
+// (finding F14).
+func sandboxUnknownStateGuidance(cerr *render.CLIError) *render.CLIError {
+	if cerr.Code == render.CodeUnconfirmed {
+		cerr.Message = fmt.Sprintf("%s; sandbox mutations are not journaled, so re-run `%s` to inspect the actual state", cerr.Message, sandboxInspectCommand)
+		cerr.ReconcileHint = &render.ReconcileHint{Command: sandboxInspectCommand}
+	}
+	return cerr
+}
+
 func (a *app) sandboxOpenCmd() *cobra.Command {
 	var name string
 	cmd := &cobra.Command{
@@ -87,7 +104,7 @@ func (a *app) sandboxOpenCmd() *cobra.Command {
 			resp, err := sandbox.New(conn).Open(ctx, name)
 			meta := render.NewMeta(settings.AccountID, info.TrackingID(), time.Since(start))
 			if err != nil {
-				return a.fail(mode, render.Classify(err, callContext(info, true)), meta)
+				return a.fail(mode, sandboxUnknownStateGuidance(render.Classify(err, callContext(info, true))), meta)
 			}
 			data := render.SandboxAccountView{AccountID: resp.GetAccountId()}
 			if mode == "table" {
@@ -125,7 +142,7 @@ func (a *app) sandboxCloseCmd() *cobra.Command {
 			_, err := sandbox.New(conn).Close(ctx, args[0])
 			meta := render.NewMeta(settings.AccountID, info.TrackingID(), time.Since(start))
 			if err != nil {
-				return a.fail(mode, render.Classify(err, callContext(info, true)), meta)
+				return a.fail(mode, sandboxUnknownStateGuidance(render.Classify(err, callContext(info, true))), meta)
 			}
 			data := render.SandboxAccountView{AccountID: args[0]}
 			if mode == "table" {
@@ -211,7 +228,7 @@ func (a *app) sandboxTopUpCmd() *cobra.Command {
 			resp, err := sandbox.New(conn).PayIn(ctx, settings.AccountID, money)
 			meta := render.NewMeta(settings.AccountID, info.TrackingID(), time.Since(start))
 			if err != nil {
-				return a.fail(mode, render.Classify(err, callContext(info, true)), meta)
+				return a.fail(mode, sandboxUnknownStateGuidance(render.Classify(err, callContext(info, true))), meta)
 			}
 			data := render.SandboxBalance(settings.AccountID, resp)
 			if mode == "table" {

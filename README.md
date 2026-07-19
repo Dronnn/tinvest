@@ -2,11 +2,9 @@
 
 A command-line interface for the [T-Invest API](https://developer.tbank.ru/invest/intro/intro) (T-Bank brokerage). `tinvest` is a thin, predictable broker adapter: it retrieves data, executes requested operations, validates inputs, and returns structured JSON — nothing more. It performs no market analysis and makes no trading decisions, which makes it equally suitable for shell scripts, automation, and AI agents.
 
-> **Status: feature-complete pre-1.0.** The implemented command groups are usable end to end, but the command surface and output contract may still evolve before v1.0.
-
 ## Design principles
 
-- **Stateless.** Every invocation reads the token from the environment, talks gRPC to the broker, prints a result, and exits. No daemons, no background processes.
+- **Stateless per invocation, no daemons.** Every invocation reads the token from the environment, talks gRPC to the broker, prints a result, and exits — there are no background processes. The one piece of local state is the on-disk intent journal (write-ahead ledger) that mutating order commands use for idempotency and reconciliation; each command still runs and exits on its own.
 - **Machine-first output.** A uniform JSON envelope with a stable `schema_version`, machine-readable errors, and a fixed exit-code contract. Monetary values are decimal strings — never floats.
 - **Reliability over convenience.** Client-side idempotency keys for orders, an explicit unknown-state protocol with reconciliation, and no automatic retries where duplicates could be created.
 - **Vendored contracts.** The gRPC contracts are vendored and pinned (see `proto/VERSION.md`); generated code is committed. `make proto` reproduces it byte-for-byte with pinned tool versions — no system-wide installs required beyond Go itself.
@@ -70,7 +68,7 @@ Use `tinvest completion <shell> --help` for persistent installation paths.
 
 ## Usage
 
-The command surface is under active development. Currently available:
+Command groups:
 
 ```sh
 tinvest version         # CLI version, pinned contract version, schema version
@@ -150,6 +148,13 @@ computed without a quote and the cap does not apply — `allow_market_orders` is
 their guardrail. The `kill_switch_file` check fails **closed**: if the path
 exists (switch engaged) *or* cannot be stat-ed (permission/I-O error), the
 mutation is blocked with a `POLICY` error.
+
+`max_open_orders` caps active orders **per order book**: `orders place` counts
+active regular orders (`GetOrders`), and `stop-orders place` counts active stop
+orders (`GetStopOrders --status active`), each against the same limit. Regular
+and stop orders are therefore counted separately — a full regular book does not
+block a stop order and vice versa. Both checks need a read-only lookup and run
+before the placement mutation; a breach is exit 2, code `POLICY`.
 
 ### Stop orders
 

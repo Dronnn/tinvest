@@ -11,9 +11,19 @@ import (
 
 type recordingOrdersClient struct {
 	investapi.OrdersServiceClient
-	postRequest    *investapi.PostOrderRequest
-	asyncRequest   *investapi.PostOrderAsyncRequest
-	replaceRequest *investapi.ReplaceOrderRequest
+	postRequest      *investapi.PostOrderRequest
+	asyncRequest     *investapi.PostOrderAsyncRequest
+	replaceRequest   *investapi.ReplaceOrderRequest
+	getOrdersRequest *investapi.GetOrdersRequest
+}
+
+func (c *recordingOrdersClient) GetOrders(
+	_ context.Context,
+	req *investapi.GetOrdersRequest,
+	_ ...grpc.CallOption,
+) (*investapi.GetOrdersResponse, error) {
+	c.getOrdersRequest = req
+	return &investapi.GetOrdersResponse{}, nil
 }
 
 func (c *recordingOrdersClient) PostOrder(
@@ -76,5 +86,45 @@ func TestConfirmMarginTradeIsForwarded(t *testing.T) {
 	}
 	if !recorder.replaceRequest.GetConfirmMarginTrade() {
 		t.Error("ReplaceOrderRequest.confirm_margin_trade = false, want true")
+	}
+}
+
+// TestListVsListToday proves the two order-list lookups differ exactly where
+// reconciliation depends on it: List uses the active-only default (no filter),
+// while ListToday sets execution_status to the full status set so terminal
+// orders created today are included (findings F3/F4).
+func TestListVsListToday(t *testing.T) {
+	recorder := &recordingOrdersClient{}
+	client := Client{api: recorder}
+
+	if _, err := client.List(context.Background(), "acc"); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if recorder.getOrdersRequest.GetAdvancedFilters() != nil {
+		t.Errorf("List must not set advanced_filters (active-only default), got %+v", recorder.getOrdersRequest.GetAdvancedFilters())
+	}
+
+	if _, err := client.ListToday(context.Background(), "acc"); err != nil {
+		t.Fatalf("ListToday: %v", err)
+	}
+	statuses := recorder.getOrdersRequest.GetAdvancedFilters().GetExecutionStatus()
+	want := map[investapi.OrderExecutionReportStatus]bool{
+		investapi.OrderExecutionReportStatus_EXECUTION_REPORT_STATUS_FILL:          true,
+		investapi.OrderExecutionReportStatus_EXECUTION_REPORT_STATUS_PARTIALLYFILL: true,
+		investapi.OrderExecutionReportStatus_EXECUTION_REPORT_STATUS_CANCELLED:     true,
+		investapi.OrderExecutionReportStatus_EXECUTION_REPORT_STATUS_REJECTED:      true,
+		investapi.OrderExecutionReportStatus_EXECUTION_REPORT_STATUS_NEW:           true,
+	}
+	if len(statuses) != len(want) {
+		t.Fatalf("ListToday execution_status = %v, want the full non-unspecified set", statuses)
+	}
+	for _, s := range statuses {
+		if !want[s] {
+			t.Errorf("unexpected status %v in ListToday filter", s)
+		}
+		delete(want, s)
+	}
+	if len(want) != 0 {
+		t.Errorf("ListToday filter missing statuses: %v", want)
 	}
 }

@@ -33,8 +33,11 @@ jobs:
       - name: make lint
         run: make lint
 
-      # Windows-specific ledger locking has no native CI coverage in this
-      # workflow; release gating runs on Linux, matching the existing runners.
+      # The Windows ledger-locking path (internal/ledger/flock_windows.go) has no
+      # native CI coverage anywhere: CI runs on Linux and macOS, and this release
+      # job runs on Linux. Windows binaries are cross-compiled and shipped, but
+      # their file locking is exercised only by the compiler, never by running
+      # the test suite on a Windows runner.
       - name: make test
         run: make test
 

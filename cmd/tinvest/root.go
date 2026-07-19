@@ -66,10 +66,34 @@ func executeContext(ctx context.Context) int {
 		_ = writer.Write(event)
 		return uerr.ExitCode()
 	}
-	if render.Mode(os.Getenv(config.EnvOutput), os.Stdout) == "json" {
+	if render.Mode(outputMode(os.Args[1:]), os.Stdout) == "json" {
 		_ = render.WriteJSON(os.Stdout, render.Failure(uerr, render.NewMeta("", "", 0)))
 	}
 	return uerr.ExitCode()
+}
+
+// outputMode resolves the output-format setting for the cobra-level usage-error
+// path, which runs before flag parsing. It honors an explicit -o/--output flag
+// found in the raw args (finding F17) and falls back to the environment, so
+// `tinvest bogus -o json` still emits a JSON error envelope rather than deciding
+// solely from TINVEST_OUTPUT.
+func outputMode(args []string) string {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-o" || a == "--output":
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+		case strings.HasPrefix(a, "--output="):
+			return strings.TrimPrefix(a, "--output=")
+		case strings.HasPrefix(a, "-o="):
+			return strings.TrimPrefix(a, "-o=")
+		case strings.HasPrefix(a, "-o") && len(a) > len("-o"):
+			return a[len("-o"):]
+		}
+	}
+	return os.Getenv(config.EnvOutput)
 }
 
 func isStreamInvocation(args []string) bool {

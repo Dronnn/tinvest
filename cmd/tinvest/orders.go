@@ -49,16 +49,23 @@ type placeData struct {
 
 // orderPayload is the token-free request document journaled at Begin (plan §10).
 type orderPayload struct {
-	AccountID          string `json:"account_id"`
-	Endpoint           string `json:"endpoint"`
-	InstrumentID       string `json:"instrument_id"`
-	OrderID            string `json:"order_id"`
-	Direction          string `json:"direction"`
-	OrderType          string `json:"order_type"`
-	Lots               int64  `json:"lots"`
-	Price              string `json:"price,omitempty"`
-	TimeInForce        string `json:"time_in_force,omitempty"`
-	Async              bool   `json:"async,omitempty"`
+	AccountID    string `json:"account_id"`
+	Endpoint     string `json:"endpoint"`
+	InstrumentID string `json:"instrument_id"`
+	OrderID      string `json:"order_id"`
+	Direction    string `json:"direction"`
+	OrderType    string `json:"order_type"`
+	Lots         int64  `json:"lots"`
+	Price        string `json:"price,omitempty"`
+	TimeInForce  string `json:"time_in_force,omitempty"`
+	Async        bool   `json:"async,omitempty"`
+	// CreatedAt is the RFC 3339 UTC time the intent was journaled. Reconciliation
+	// uses it to bound the terminal-visibility horizon: the day list (ListToday)
+	// only covers orders created today, so an intent created before today whose
+	// GetOrderState reads NOT_FOUND cannot be confirmed and must stay unresolved
+	// rather than be closed as not-placed (findings F3/F4). Empty on entries
+	// journaled before this field existed — treated as "unknown age".
+	CreatedAt          string `json:"created_at,omitempty"`
 	ConfirmMarginTrade bool   `json:"confirm_margin_trade,omitempty"`
 }
 
@@ -263,6 +270,7 @@ func (a *app) runPlace(cmd *cobra.Command, f *placeFlags) error {
 			Price:              rp.priceStr,
 			TimeInForce:        rp.tifStr,
 			Async:              rp.async,
+			CreatedAt:          start.UTC().Format(time.RFC3339),
 			ConfirmMarginTrade: rp.confirmMarginTrade,
 		},
 	}
@@ -300,10 +308,12 @@ func (a *app) runPlace(cmd *cobra.Command, f *placeFlags) error {
 		v := render.PlaceResult(out.Sync, rp.orderID, orders.Lifecycle(out.Sync.GetExecutionReportStatus()))
 		data.Order = &v
 	}
-	if mode == "table" {
-		return placeTable(os.Stdout, data)
-	}
-	return render.WriteJSON(os.Stdout, render.Success(data, meta))
+	return emitMutationResult(func() error {
+		if mode == "table" {
+			return placeTable(os.Stdout, data)
+		}
+		return render.WriteJSON(os.Stdout, render.Success(data, meta))
+	}, rp.orderID, "was placed")
 }
 
 // placeOutcome carries whichever response shape the placement produced plus the
@@ -355,14 +365,14 @@ func placeExec(cmdCtx context.Context, cl orders.Client, led *ledger.Ledger, int
 			return out, cerr
 		}
 		// A confirmed error (server status) is a definitive outcome: record it.
-		_ = entry.Rejected(respErr)
+		warnJournalWrite("broker-rejected", reconcileCommand, entry.Rejected(respErr))
 		return out, cerr
 	}
 
 	execStatus := out.executionStatus()
 	if orders.IsRejected(execStatus) {
 		msg := out.rejectMessage()
-		_ = entry.Rejected(errors.New(msg))
+		warnJournalWrite("broker-rejected", reconcileCommand, entry.Rejected(errors.New(msg)))
 		return out, &render.CLIError{
 			Code:       render.CodeBrokerRejected,
 			Message:    msg,
@@ -371,11 +381,36 @@ func placeExec(cmdCtx context.Context, cl orders.Client, led *ledger.Ledger, int
 		}
 	}
 
-	_ = entry.Confirmed(ledger.Result{
+	warnJournalWrite("broker-confirmed", reconcileCommand, entry.Confirmed(ledger.Result{
 		OrderID:    out.exchangeOrderID(),
 		TrackingID: info.TrackingID(),
-	})
+	}))
 	return out, nil
+}
+
+// warnJournalWrite reports a post-outcome write-ahead-ledger failure on stderr
+// without altering the command's envelope or exit code. The broker outcome has
+// already happened and is authoritative; a failed journal write only means the
+// local record diverged, which the named reconcile command heals on the next run
+// (finding F16).
+func warnJournalWrite(stage, healCommand string, err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: journal %s write failed: %v; the broker outcome stands, run `%s` to heal the local record\n", stage, err, healCommand)
+	}
+}
+
+// emitMutationResult writes a mutation's success envelope after the mutation has
+// already taken effect at the broker. If the write itself fails, the mutation
+// still happened, so it must NOT surface as a cobra usage error (exit 2) that
+// hides the result: it degrades to exit 1 (internal) and prints the order id and
+// outcome to stderr as a last-resort record the caller can reconcile against
+// (finding F7).
+func emitMutationResult(write func() error, orderID, outcome string) error {
+	if err := write(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: order %s %s, but writing the result envelope failed: %v\n", orderID, outcome, err)
+		return &exitError{render.ExitInternal}
+	}
+	return nil
 }
 
 func (o *placeOutcome) executionStatus() investapi.OrderExecutionReportStatus {
@@ -663,6 +698,9 @@ func (a *app) ordersListCmd() *cobra.Command {
 type cancelData struct {
 	OrderID string `json:"order_id"`
 	Time    string `json:"time,omitempty"`
+	// Note explains a settled-no-op cancel: the id was already terminal, so the
+	// requested end-state holds and the exit is 0 rather than a rejection (F5).
+	Note string `json:"note,omitempty"`
 }
 
 func (a *app) ordersCancelCmd() *cobra.Command {
@@ -698,22 +736,62 @@ func (a *app) ordersCancelCmd() *cobra.Command {
 				return a.fail(mode, render.PolicyError(v.Message, v.Details), render.NewMeta(settings.AccountID, "", time.Since(start)))
 			}
 			// CancelOrder is convergent when repeated, so retry is safe.
+			cl := orders.New(conn)
 			ctx, info := transport.WithCallInfo(retry.Idempotent(cmd.Context()))
-			resp, err := orders.New(conn).Cancel(ctx, settings.AccountID, args[0])
+			resp, err := cl.Cancel(ctx, settings.AccountID, args[0])
 			meta := render.NewMeta(settings.AccountID, info.TrackingID(), time.Since(start))
 			if err != nil {
 				cerr := render.Classify(err, callContext(info, true))
+				// A cancel retried after a successful first cancel (or of an order
+				// that already filled) returns NOT_FOUND even though the requested
+				// end-state — order no longer active — holds. Verify the actual
+				// state before reporting a business rejection; only a never-valid id
+				// stays exit 5 (finding F5).
+				if status.Code(err) == codes.NotFound {
+					if note, ok := cancelSettledNote(cmd.Context(), cl, settings.AccountID, args[0], false); ok {
+						data := cancelData{OrderID: args[0], Note: note}
+						return emitMutationResult(func() error {
+							if mode == "table" {
+								return render.Table(os.Stdout, []string{"ORDER_ID", "NOTE"}, [][]string{{data.OrderID, data.Note}})
+							}
+							return render.WriteJSON(os.Stdout, render.Success(data, meta))
+						}, args[0], "was already settled")
+					}
+				}
 				command := fmt.Sprintf("tinvest orders get %s", args[0])
 				return a.fail(mode, addCancelReconcileHint(cerr, args[0], command), meta)
 			}
 			data := cancelData{OrderID: args[0], Time: render.Timestamp(resp.GetTime())}
-			if mode == "table" {
-				return render.Table(os.Stdout, []string{"ORDER_ID", "CANCELLED_AT"}, [][]string{{data.OrderID, data.Time}})
-			}
-			return render.WriteJSON(os.Stdout, render.Success(data, meta))
+			return emitMutationResult(func() error {
+				if mode == "table" {
+					return render.Table(os.Stdout, []string{"ORDER_ID", "CANCELLED_AT"}, [][]string{{data.OrderID, data.Time}})
+				}
+				return render.WriteJSON(os.Stdout, render.Success(data, meta))
+			}, args[0], "was cancelled")
 		},
 	}
 	return cmd
+}
+
+// cancelSettledNote checks whether an order a cancel reported as NOT_FOUND is in
+// fact already terminal (the retry-after-success case, finding F5). A follow-up
+// state lookup that returns a terminal order means the requested end-state holds,
+// so the cancel is a satisfied no-op (exit 0 with a note) rather than a business
+// rejection. It returns false — keeping the exit-5 path — when the order is still
+// active, the id was never valid (a second NOT_FOUND), or the lookup itself
+// failed. byRequestID selects the id kind: false for an exchange order id
+// (regular orders), which is what CancelOrder takes.
+func cancelSettledNote(ctx context.Context, cl orders.Client, accountID, orderID string, byRequestID bool) (string, bool) {
+	cctx, _ := transport.WithCallInfo(ctx)
+	state, err := cl.Get(cctx, accountID, orderID, byRequestID)
+	if err != nil {
+		return "", false
+	}
+	st := state.GetExecutionReportStatus()
+	if orders.IsTerminal(st) {
+		return fmt.Sprintf("order was already terminal (%s); the cancel is a satisfied no-op", orders.Lifecycle(st)), true
+	}
+	return "", false
 }
 
 func (a *app) ordersReplaceCmd() *cobra.Command {
@@ -831,21 +909,46 @@ func (a *app) ordersReplaceCmd() *cobra.Command {
 					cerr.ReconcileHint = &render.ReconcileHint{OrderID: key, Command: reconcileCommand}
 					return a.fail(mode, cerr, meta)
 				}
-				_ = entry.Rejected(err)
+				warnJournalWrite("broker-rejected", reconcileCommand, entry.Rejected(err))
 				return a.fail(mode, cerr, meta)
 			}
-			_ = entry.Confirmed(ledger.Result{OrderID: resp.GetOrderId(), TrackingID: info.TrackingID()})
-			view := render.PlaceResult(resp, key, orders.Lifecycle(resp.GetExecutionReportStatus()))
-			if mode == "table" {
-				return placeTable(os.Stdout, placeData{Order: &view})
+			// A ReplaceOrder that comes back REJECTED is a definitive business
+			// error like a rejected PostOrder: record it as rejected and exit 5,
+			// rather than journaling Confirmed and reporting success (finding F6,
+			// mirroring placeExec).
+			if orders.IsRejected(resp.GetExecutionReportStatus()) {
+				msg := replaceRejectMessage(resp)
+				warnJournalWrite("broker-rejected", reconcileCommand, entry.Rejected(errors.New(msg)))
+				return a.fail(mode, &render.CLIError{
+					Code:       render.CodeBrokerRejected,
+					Message:    msg,
+					Phase:      transport.PhaseConfirmed.String(),
+					TrackingID: info.TrackingID(),
+				}, meta)
 			}
-			return render.WriteJSON(os.Stdout, render.Success(placeData{Order: &view}, meta))
+			warnJournalWrite("broker-confirmed", reconcileCommand, entry.Confirmed(ledger.Result{OrderID: resp.GetOrderId(), TrackingID: info.TrackingID()}))
+			view := render.PlaceResult(resp, key, orders.Lifecycle(resp.GetExecutionReportStatus()))
+			return emitMutationResult(func() error {
+				if mode == "table" {
+					return placeTable(os.Stdout, placeData{Order: &view})
+				}
+				return render.WriteJSON(os.Stdout, render.Success(placeData{Order: &view}, meta))
+			}, key, "was replaced")
 		},
 	}
 	cmd.Flags().Int64Var(&quantity, "quantity", 0, "new number of lots (positive)")
 	cmd.Flags().StringVar(&price, "price", "", "new limit price as a decimal string")
 	cmd.Flags().BoolVar(&confirmMarginTrade, "confirm-margin-trade", false, "confirm a replacement that may create an uncovered position")
 	return cmd
+}
+
+// replaceRejectMessage extracts a broker rejection message from a ReplaceOrder
+// response (which reuses PostOrderResponse), falling back to a generic phrase.
+func replaceRejectMessage(resp *investapi.PostOrderResponse) string {
+	if m := resp.GetMessage(); m != "" {
+		return m
+	}
+	return "order replacement rejected by broker"
 }
 
 func replacementInstrumentID(state *investapi.OrderState) string {
@@ -1104,9 +1207,13 @@ func waitFlow(parent context.Context, cl orders.Client, accountID, orderID strin
 }
 
 type reconcileData struct {
-	Outcomes           []render.ReconcileOutcomeView `json:"outcomes"`
-	ForeignIntentCount int                           `json:"foreign_intent_count,omitempty"`
-	ForeignIntentHint  string                        `json:"foreign_intent_hint,omitempty"`
+	Outcomes []render.ReconcileOutcomeView `json:"outcomes"`
+	// UnresolvedCount is how many outcomes still need attention (indeterminate,
+	// error, unresolved, or ambiguous). When non-zero the command exits 1 so a
+	// caller cannot mistake a partial sweep for a clean one (finding F19).
+	UnresolvedCount    int    `json:"unresolved_count,omitempty"`
+	ForeignIntentCount int    `json:"foreign_intent_count,omitempty"`
+	ForeignIntentHint  string `json:"foreign_intent_hint,omitempty"`
 }
 
 type reconcileTarget struct {
@@ -1129,11 +1236,49 @@ func newReconcileData(outcomes []render.ReconcileOutcomeView, foreignHint string
 		if outcome.Outcome == "foreign" {
 			data.ForeignIntentCount++
 		}
+		if reconcileNeedsAttention(outcome.Outcome) {
+			data.UnresolvedCount++
+		}
 	}
 	if data.ForeignIntentCount > 0 {
 		data.ForeignIntentHint = foreignHint
 	}
 	return data
+}
+
+// reconcileNeedsAttention reports whether an outcome leaves an intent in doubt —
+// the states that make reconcile exit non-zero (finding F19). "placed" and
+// "not-placed" are clean resolutions; "foreign" and "profile-mismatch" are
+// deliberate cross-command / cross-profile skips carrying their own guidance, so
+// neither counts here.
+func reconcileNeedsAttention(outcome string) bool {
+	switch outcome {
+	case "indeterminate", "error", "unresolved", "ambiguous":
+		return true
+	default:
+		return false
+	}
+}
+
+// finishReconcile writes the reconcile envelope (or table) and maps a partial
+// result to a non-zero exit: any unresolved or errored outcome makes the command
+// exit 1, so a caller cannot mistake "some intents still in doubt" for a clean
+// sweep (finding F19). The envelope stays ok:true — reconcile itself ran; the
+// count is in data.unresolved_count and each outcome carries its own detail.
+func finishReconcile(mode string, data reconcileData, meta render.Meta) error {
+	var writeErr error
+	if mode == "table" {
+		writeErr = reconcileTable(os.Stdout, data.Outcomes)
+	} else {
+		writeErr = render.WriteJSON(os.Stdout, render.Success(data, meta))
+	}
+	if writeErr != nil {
+		return writeErr
+	}
+	if data.UnresolvedCount > 0 {
+		return &exitError{render.ExitInternal}
+	}
+	return nil
 }
 
 func (a *app) ordersReconcileCmd() *cobra.Command {
@@ -1169,10 +1314,7 @@ func (a *app) ordersReconcileCmd() *cobra.Command {
 			if cerr != nil {
 				return a.fail(mode, cerr, meta)
 			}
-			if mode == "table" {
-				return reconcileTable(os.Stdout, outcomes)
-			}
-			return render.WriteJSON(os.Stdout, render.Success(newReconcileData(outcomes, stopReconcileCommand), meta))
+			return finishReconcile(mode, newReconcileData(outcomes, stopReconcileCommand), meta)
 		},
 	}
 }
@@ -1183,13 +1325,15 @@ func (a *app) ordersReconcileCmd() *cobra.Command {
 //
 // NOT_FOUND is handled differently by placement mode. A synchronous PostOrder is
 // queryable immediately once accepted, so a persistent NOT_FOUND is meaningful:
-// it is re-checked once after a short delay (to absorb a transient miss) and then
-// closed as not-placed. A PostOrderAsync order is NOT queryable via
-// GetOrderState until the exchange assigns its id — which arrives over the orders
-// stream with no documented upper bound — so NOT_FOUND must never close it as
-// not-placed. Instead the day's order list is scanned for the exchange order by
-// order_request_id; if it is not there either, the intent is left unresolved for
-// a later run (see reconcileAsyncNotFound).
+// it is re-checked once after a short delay (to absorb a transient miss), and
+// only then — after a terminal-inclusive day-list check also comes up empty for
+// an intent created today — closed as not-placed (see resolveSyncNotFound). A
+// PostOrderAsync order is NOT queryable via GetOrderState until the exchange
+// assigns its id — which arrives over the orders stream with no documented upper
+// bound — so NOT_FOUND must never close it as not-placed. Both paths scan the
+// day's terminal-inclusive order list (ListToday) by order_request_id, since
+// GetOrderState may not surface an already-terminal order; anything unconfirmed
+// there is left unresolved for a later run (see reconcileAsyncNotFound).
 func reconcileFlowForTarget(
 	ctx context.Context,
 	cl orders.Client,
@@ -1246,7 +1390,7 @@ func reconcileFlowForTarget(
 			// NOT_FOUND. Async orders are not queryable until exchange acceptance,
 			// so they are never closed here; sync orders get a confirming re-check.
 			if payload.Async {
-				reconcileAsyncNotFound(ctx, cl, e, &out)
+				reconcileAsyncNotFound(ctx, cl, e, payload, &out)
 				outcomes = append(outcomes, out)
 				continue
 			}
@@ -1258,8 +1402,12 @@ func reconcileFlowForTarget(
 				continue
 			}
 			if err != nil {
-				out.Outcome = "not-placed"
-				_ = e.Reconciled(ledger.Result{Error: "not-placed"})
+				// Both GetOrderState reads returned NOT_FOUND. Before closing the
+				// intent as not-placed — which frees the caller to re-issue and
+				// risks a duplicate — confirm against the terminal-inclusive day
+				// list: GetOrderState may not surface an order that already reached
+				// a terminal state, but ListToday does (finding F3).
+				resolveSyncNotFound(ctx, cl, e, payload, &out)
 				outcomes = append(outcomes, out)
 				continue
 			}
@@ -1296,32 +1444,111 @@ func recheckNotFound(
 	return state, info, err
 }
 
+// resolveSyncNotFound decides a synchronous intent whose order was NOT_FOUND on
+// two GetOrderState reads (finding F3). Because GetOrderState may not surface an
+// order that already reached a terminal state, it first checks the day's
+// terminal-inclusive order list (ListToday) by order_request_id:
+//   - found there -> placed (Reconciled);
+//   - the list lookup failed -> indeterminate (never close on an unknown);
+//   - not in the list and the intent was created today -> not-placed is safe,
+//     because both live and terminal-today views were checked and are empty;
+//   - not in the list but the intent predates today -> terminal history is
+//     unreachable (ListToday only covers today, GetOrderState is not deep
+//     history), so the intent stays UNRESOLVED with a manual-check pointer
+//     rather than being falsely closed.
+func resolveSyncNotFound(ctx context.Context, cl orders.Client, e *ledger.Entry, payload orderPayload, out *render.ReconcileOutcomeView) {
+	lctx, info := transport.WithCallInfo(ctx)
+	list, err := cl.ListToday(lctx, e.AccountID())
+	if err != nil {
+		out.Outcome = "indeterminate"
+		out.Error = fmt.Sprintf("two GetOrderState NOT_FOUNDs, but the terminal-order-list check failed; retry reconcile later: %s", render.Classify(err, callContext(info, false)).Message)
+		return
+	}
+	if s := findOrderByRequestID(list, e.OrderID()); s != nil {
+		setPlacedReconcileOutcome(out, s)
+		_ = e.Reconciled(ledger.Result{OrderID: s.GetOrderId(), TrackingID: info.TrackingID()})
+		return
+	}
+	if intentCreatedToday(payload.CreatedAt) {
+		out.Outcome = "not-placed"
+		_ = e.Reconciled(ledger.Result{Error: "not-placed"})
+		return
+	}
+	out.Outcome = "unresolved"
+	out.Error = fmt.Sprintf("GetOrderState no longer sees this order and today's order list only covers orders created today; an intent from %s cannot be confirmed here. Check `tinvest operations list --account %s` or your broker report for order_request_id %s before re-issuing", intentDateLabel(payload.CreatedAt), e.AccountID(), e.OrderID())
+}
+
 // reconcileAsyncNotFound resolves a GetOrderState NOT_FOUND for an async
 // (PostOrderAsync) intent. Per the API, such an order is not queryable via
 // GetOrderState until the exchange assigns its id (delivered over the orders
 // stream, with no documented upper bound), so NOT_FOUND must never close it as
-// not-placed. It scans the day's order list for the exchange order by
+// not-placed. It scans the day's terminal-inclusive order list (ListToday, so a
+// fast-filled or fast-cancelled async order can converge, finding F4) by
 // order_request_id; if found the intent is closed as placed, otherwise it is
-// left UNRESOLVED (no Reconciled call) with guidance to retry later or watch the
-// orders stream.
-func reconcileAsyncNotFound(ctx context.Context, cl orders.Client, e *ledger.Entry, out *render.ReconcileOutcomeView) {
+// left UNRESOLVED (no Reconciled call) with guidance to retry, watch the orders
+// stream, or — for an intent that predates today — check operations history.
+func reconcileAsyncNotFound(ctx context.Context, cl orders.Client, e *ledger.Entry, payload orderPayload, out *render.ReconcileOutcomeView) {
 	lctx, info := transport.WithCallInfo(ctx)
-	list, err := cl.List(lctx, e.AccountID())
+	list, err := cl.ListToday(lctx, e.AccountID())
 	if err != nil {
 		out.Outcome = "indeterminate"
 		out.Error = fmt.Sprintf("async order is not yet visible via GetOrderState and the order-list lookup failed; retry reconcile later: %s", render.Classify(err, callContext(info, false)).Message)
 		return
 	}
-	for _, s := range list {
-		if rid := s.GetOrderRequestId(); rid != "" && rid == e.OrderID() {
-			setPlacedReconcileOutcome(out, s)
-			_ = e.Reconciled(ledger.Result{OrderID: s.GetOrderId(), TrackingID: info.TrackingID()})
-			return
-		}
+	if s := findOrderByRequestID(list, e.OrderID()); s != nil {
+		setPlacedReconcileOutcome(out, s)
+		_ = e.Reconciled(ledger.Result{OrderID: s.GetOrderId(), TrackingID: info.TrackingID()})
+		return
 	}
 	// Not confirmable yet: leave the intent unresolved for a later run.
 	out.Outcome = "unresolved"
-	out.Error = fmt.Sprintf("async order is not yet visible: PostOrderAsync orders become queryable only after exchange acceptance, with no fixed delay. Re-run `%s` later, or watch `tinvest stream orders --account %s`", reconcileCommand, e.AccountID())
+	if intentCreatedToday(payload.CreatedAt) {
+		out.Error = fmt.Sprintf("async order is not yet visible: PostOrderAsync orders become queryable only after exchange acceptance, with no fixed delay. Re-run `%s` later, or watch `tinvest stream orders --account %s`", reconcileCommand, e.AccountID())
+		return
+	}
+	out.Error = fmt.Sprintf("async order created %s is not in today's order list and GetOrderState no longer sees it; terminal history is out of reach here. Check `tinvest operations list --account %s` or your broker report for order_request_id %s before re-issuing", intentDateLabel(payload.CreatedAt), e.AccountID(), e.OrderID())
+}
+
+// findOrderByRequestID returns the order in list whose order_request_id equals
+// the client idempotency key, or nil. It is the terminal-side match both the
+// sync and async NOT_FOUND paths use.
+func findOrderByRequestID(list []*investapi.OrderState, requestID string) *investapi.OrderState {
+	for _, s := range list {
+		if rid := s.GetOrderRequestId(); rid != "" && rid == requestID {
+			return s
+		}
+	}
+	return nil
+}
+
+// intentCreatedToday reports whether a journaled RFC 3339 created_at falls on
+// the current UTC day — the window ListToday can confirm. An empty or
+// unparseable stamp is treated as not-today (conservative: keep the intent
+// unresolved rather than risk a false not-placed close, finding F3).
+func intentCreatedToday(createdAt string) bool {
+	if createdAt == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, createdAt)
+	if err != nil {
+		return false
+	}
+	now := time.Now().UTC()
+	t = t.UTC()
+	return t.Year() == now.Year() && t.YearDay() == now.YearDay()
+}
+
+// intentDateLabel renders a journaled created_at as a bare UTC date for guidance
+// messages, or "an earlier session" when it is missing or unparseable.
+func intentDateLabel(createdAt string) string {
+	if createdAt == "" {
+		return "an earlier session"
+	}
+	t, err := time.Parse(time.RFC3339, createdAt)
+	if err != nil {
+		return "an earlier session"
+	}
+	return t.UTC().Format("2006-01-02")
 }
 
 func setPlacedReconcileOutcome(out *render.ReconcileOutcomeView, state *investapi.OrderState) {
@@ -1366,9 +1593,13 @@ func reconcileTable(w io.Writer, outcomes []render.ReconcileOutcomeView) error {
 		if outcome.Outcome == "foreign" {
 			foreignCount++
 		}
+		detail := outcome.Error
+		if detail == "" {
+			detail = outcome.Note
+		}
 		rows = append(rows, []string{
 			outcome.IntentID, outcome.ClientOrderID, outcome.Outcome,
-			outcome.OrderID, outcome.Lifecycle, outcome.Error,
+			outcome.OrderID, outcome.Lifecycle, detail,
 		})
 	}
 	if foreignCount > 0 {

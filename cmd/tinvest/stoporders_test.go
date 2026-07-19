@@ -472,9 +472,24 @@ func TestMatchStopOrdersUsesFullRequestAndCreationWindow(t *testing.T) {
 		SpreadType: investapi.TrailingValueType_TRAILING_VALUE_RELATIVE,
 	}
 
+	// matchStopOrders matches on the full field set only; the creation window is
+	// checked separately by the caller (F10). Both exact and too-old are
+	// field-identical, so both come back — which is what makes a non-unique match
+	// fail closed rather than silently pick the in-window one.
 	matches := matchStopOrders([]*investapi.StopOrder{wrongType, tooOld, wrongTrailing, exact}, payload)
-	if len(matches) != 1 || matches[0].GetStopOrderId() != "exact" {
-		t.Fatalf("matches = %+v, want only exact", matches)
+	gotIDs := map[string]bool{}
+	for _, m := range matches {
+		gotIDs[m.GetStopOrderId()] = true
+	}
+	if len(matches) != 2 || !gotIDs["exact"] || !gotIDs["too-old"] {
+		t.Fatalf("matches = %+v, want exact and too-old (field matches, window not applied here)", matches)
+	}
+	// The creation window is what separates them, applied by the reconcile caller.
+	if !stopCreationMatches(exact, payload.CreatedAt) {
+		t.Fatal("exact should be inside the creation window")
+	}
+	if stopCreationMatches(tooOld, payload.CreatedAt) {
+		t.Fatal("too-old should be outside the creation window")
 	}
 }
 

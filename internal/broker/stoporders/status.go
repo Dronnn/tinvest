@@ -29,3 +29,17 @@ func StatusName(s investapi.StopOrderStatusOption) string {
 		return StatusUnspecified
 	}
 }
+
+// IsTerminalStatus reports whether a stop-order status is final: executed,
+// cancelled, or expired. A stop order in a terminal status will not change, so a
+// cancel that finds it already terminal is a satisfied no-op (finding F5).
+func IsTerminalStatus(s investapi.StopOrderStatusOption) bool {
+	switch s {
+	case investapi.StopOrderStatusOption_STOP_ORDER_STATUS_EXECUTED,
+		investapi.StopOrderStatusOption_STOP_ORDER_STATUS_CANCELED,
+		investapi.StopOrderStatusOption_STOP_ORDER_STATUS_EXPIRED:
+		return true
+	default:
+		return false
+	}
+}

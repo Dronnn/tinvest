@@ -177,6 +177,10 @@ type ReconcileOutcomeView struct {
 	OrderID       string `json:"order_id,omitempty"`
 	Lifecycle     string `json:"lifecycle,omitempty"`
 	Error         string `json:"error,omitempty"`
+	// Note is advisory context attached to a resolved outcome — most importantly
+	// that a "placed" match is heuristic (no client-id correlation), see the
+	// stop-order reconcile path. Empty for outcomes that need no caveat.
+	Note string `json:"note,omitempty"`
 }
 
 // ReconcileTable renders reconcile outcomes for humans.

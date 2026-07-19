@@ -2,8 +2,10 @@ tinvest
 Copyright 2026 Andreas Maier
 
 This product includes software adapted from third-party open-source
-projects. See THIRD_PARTY_LICENSES.md for the full list of provenance,
-license texts, and a summary of what changed from upstream.
+projects, and links against third-party Go modules. See
+THIRD_PARTY_LICENSES.md for the full list of provenance, the license text
+of every module compiled into the binary (Apache-2.0, BSD-3-Clause, MIT,
+and the Go patent grant), and a summary of what changed from upstream.
 
 --------------------------------------------------------------------------
 

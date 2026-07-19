@@ -101,6 +101,41 @@ func (c Client) List(ctx context.Context, accountID string) ([]*investapi.OrderS
 	return resp.GetOrders(), nil
 }
 
+// todayOrderStatuses widens a GetOrders lookup from the active-only default to
+// every execution status the contract can return, so terminal orders (filled,
+// rejected, cancelled) created today are included. It is the full non-UNSPECIFIED
+// set of OrderExecutionReportStatus.
+var todayOrderStatuses = []investapi.OrderExecutionReportStatus{
+	investapi.OrderExecutionReportStatus_EXECUTION_REPORT_STATUS_FILL,
+	investapi.OrderExecutionReportStatus_EXECUTION_REPORT_STATUS_PARTIALLYFILL,
+	investapi.OrderExecutionReportStatus_EXECUTION_REPORT_STATUS_CANCELLED,
+	investapi.OrderExecutionReportStatus_EXECUTION_REPORT_STATUS_REJECTED,
+	investapi.OrderExecutionReportStatus_EXECUTION_REPORT_STATUS_NEW,
+}
+
+// ListToday returns every order created today on the account across all
+// execution statuses — active AND terminal — by setting
+// GetOrdersRequestFilters.execution_status to the full status set (GetOrders
+// defaults to active orders only). The contract scopes this filter to orders
+// created today, which is exactly reconciliation's terminal-visibility horizon:
+// GetOrderState may report a just-filled or just-cancelled order as NOT_FOUND,
+// but that order is still in this list, so reconciliation checks it before
+// closing an intent as not-placed (plan §9, findings F3/F4). Orders older than
+// today are not reachable here — the caller must treat their absence as
+// "unknown", not "not placed".
+func (c Client) ListToday(ctx context.Context, accountID string) ([]*investapi.OrderState, error) {
+	resp, err := c.api.GetOrders(ctx, &investapi.GetOrdersRequest{
+		AccountId: accountID,
+		AdvancedFilters: &investapi.GetOrdersRequest_GetOrdersRequestFilters{
+			ExecutionStatus: todayOrderStatuses,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetOrders(), nil
+}
+
 // Cancel cancels one order by its exchange order id (CancelOrder). Cancellation
 // is convergent when repeated, so the caller may mark ctx idempotent for retry.
 func (c Client) Cancel(ctx context.Context, accountID, orderID string) (*investapi.CancelOrderResponse, error) {

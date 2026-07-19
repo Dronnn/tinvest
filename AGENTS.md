@@ -29,7 +29,7 @@ unsupported schema versions instead of guessing.
 | Exit | Meaning | Required caller action |
 | ---: | --- | --- |
 | 0 | Success | Consume `data`. |
-| 1 | Internal failure | Do not retry blindly. Record the envelope and tracking ID, then stop or escalate. |
+| 1 | Internal failure, or a reconcile that could not fully resolve | Do not retry blindly. Record the envelope and tracking ID, then stop or escalate. For a `reconcile` command see the reconcile note below. |
 | 2 | Usage or policy rejection | Fix the request, or ask a human to change policy. Do not retry unchanged. |
 | 3 | Authentication or permission failure | Repair credentials or access before retrying. |
 | 4 | Rate limited | Wait at least `error.retry_after_ms` when present, then retry according to operation semantics. |
@@ -52,6 +52,16 @@ unsupported schema versions instead of guessing.
   --dry-run` performs local validation only and makes no network call.
 - Run one command for one operation. Do not combine several intended mutations
   behind one shell command whose partial outcome cannot be attributed.
+- `orders reconcile` and `stop-orders reconcile` exit **0** only when every
+  intent resolved cleanly (each outcome is `placed` or `not-placed`). If any
+  outcome is `indeterminate`, `error`, `unresolved`, or `ambiguous`, the command
+  exits **1** and sets `data.unresolved_count`. The envelope still reports
+  `ok: true` — reconcile itself ran — but the non-zero exit means "state is still
+  in doubt": inspect each `outcomes[].outcome`/`error`, act on the guidance, and
+  re-run before assuming any intent is settled. `foreign` and `profile-mismatch`
+  outcomes are deliberate cross-command / cross-profile skips and do not, on
+  their own, force the non-zero exit. A `placed` stop-order outcome carries a
+  `note` that its correlation is heuristic (stop orders have no client id).
 
 ## NDJSON streams
 

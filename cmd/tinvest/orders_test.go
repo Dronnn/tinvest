@@ -46,8 +46,10 @@ type fakeOrders struct {
 	stateCalls     int
 	stateReplies   []orderStateReply
 
-	openOrders []*investapi.OrderState
-	listErr    error
+	openOrders      []*investapi.OrderState
+	listErr         error
+	getOrdersReqs   []*investapi.GetOrdersRequest
+	todayOnlyOrders []*investapi.OrderState // returned only when advanced_filters is set (ListToday)
 
 	previewResp *investapi.GetOrderPriceResponse
 	maxLotsResp *investapi.GetMaxLotsResponse
@@ -283,9 +285,12 @@ func TestAsyncReconcileNeverClosesNotPlacedOnNotFound(t *testing.T) {
 		wantUnresolved int
 	}{
 		{
-			name: "found in the day's order list",
+			// A fast-filled async order is terminal, so it appears only in the
+			// terminal-inclusive day list (ListToday) — the active-only List that
+			// the code used before would miss it and never converge (F4).
+			name: "fast-filled async converges via the terminal day list",
 			openOrders: []*investapi.OrderState{
-				{OrderId: "exch-async-1", OrderRequestId: testUUID, ExecutionReportStatus: investapi.OrderExecutionReportStatus_EXECUTION_REPORT_STATUS_NEW},
+				{OrderId: "exch-async-1", OrderRequestId: testUUID, ExecutionReportStatus: investapi.OrderExecutionReportStatus_EXECUTION_REPORT_STATUS_FILL},
 			},
 			wantOutcome: "placed", wantUnresolved: 0,
 		},
@@ -306,7 +311,7 @@ func TestAsyncReconcileNeverClosesNotPlacedOnNotFound(t *testing.T) {
 			entry, err := led.Begin(ledger.Intent{
 				IntentID: "async-" + tt.name, Kind: kindOrderPlace, AccountID: "acc-1",
 				Profile: "test", OrderID: testUUID,
-				Payload: map[string]any{"endpoint": testEndpoint, "async": true},
+				Payload: map[string]any{"endpoint": testEndpoint, "async": true, "created_at": time.Now().UTC().Format(time.RFC3339)},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -336,9 +341,13 @@ func TestAsyncReconcileNeverClosesNotPlacedOnNotFound(t *testing.T) {
 			}
 			fake.mu.Lock()
 			stateCalls := fake.stateCalls
+			reqs := fake.getOrdersReqs
 			fake.mu.Unlock()
 			if stateCalls != 1 {
 				t.Fatalf("GetOrderState calls = %d, want 1 (async must not double-check)", stateCalls)
+			}
+			if len(reqs) != 1 || reqs[0].GetAdvancedFilters() == nil || len(reqs[0].GetAdvancedFilters().GetExecutionStatus()) == 0 {
+				t.Fatalf("GetOrders reqs = %+v, want one terminal-inclusive ListToday call (advanced_filters.execution_status set)", reqs)
 			}
 			if unresolved, _ := led.Unresolved(); len(unresolved) != tt.wantUnresolved {
 				t.Fatalf("unresolved = %d, want %d", len(unresolved), tt.wantUnresolved)
@@ -351,9 +360,13 @@ func TestAsyncReconcileNeverClosesNotPlacedOnNotFound(t *testing.T) {
 // re-checks a NOT_FOUND once (after the delay) before deciding, since NOT_FOUND
 // for a synchronous order is meaningful.
 func TestSyncReconcileRechecksNotFoundBeforeClosing(t *testing.T) {
+	today := time.Now().UTC().Format(time.RFC3339)
+	yesterday := time.Now().UTC().AddDate(0, 0, -1).Format(time.RFC3339)
 	tests := []struct {
 		name           string
 		replies        []orderStateReply
+		createdAt      string
+		dayList        []*investapi.OrderState // ListToday result (terminal-inclusive)
 		wantOutcome    string
 		wantUnresolved int
 	}{
@@ -363,15 +376,39 @@ func TestSyncReconcileRechecksNotFoundBeforeClosing(t *testing.T) {
 				{err: status.Error(codes.NotFound, "not propagated")},
 				{state: &investapi.OrderState{OrderId: "exchange-1", ExecutionReportStatus: investapi.OrderExecutionReportStatus_EXECUTION_REPORT_STATUS_NEW}},
 			},
+			createdAt:   today,
 			wantOutcome: "placed", wantUnresolved: 0,
 		},
 		{
-			name: "two not found responses close not-placed",
+			name: "two not found, today, absent from day list -> not-placed",
 			replies: []orderStateReply{
 				{err: status.Error(codes.NotFound, "first")},
 				{err: status.Error(codes.NotFound, "second")},
 			},
+			createdAt:   today,
 			wantOutcome: "not-placed", wantUnresolved: 0,
+		},
+		{
+			name: "two not found, but found terminal in day list -> placed",
+			replies: []orderStateReply{
+				{err: status.Error(codes.NotFound, "first")},
+				{err: status.Error(codes.NotFound, "second")},
+			},
+			createdAt: today,
+			dayList: []*investapi.OrderState{{
+				OrderId: "exch-term", OrderRequestId: testUUID,
+				ExecutionReportStatus: investapi.OrderExecutionReportStatus_EXECUTION_REPORT_STATUS_CANCELLED,
+			}},
+			wantOutcome: "placed", wantUnresolved: 0,
+		},
+		{
+			name: "two not found, intent predates today -> unresolved",
+			replies: []orderStateReply{
+				{err: status.Error(codes.NotFound, "first")},
+				{err: status.Error(codes.NotFound, "second")},
+			},
+			createdAt:   yesterday,
+			wantOutcome: "unresolved", wantUnresolved: 1,
 		},
 		{
 			name: "single not found then inconclusive error",
@@ -379,6 +416,7 @@ func TestSyncReconcileRechecksNotFoundBeforeClosing(t *testing.T) {
 				{err: status.Error(codes.NotFound, "first")},
 				{err: status.Error(codes.PermissionDenied, "cannot confirm")},
 			},
+			createdAt:   today,
 			wantOutcome: "indeterminate", wantUnresolved: 1,
 		},
 	}
@@ -389,7 +427,7 @@ func TestSyncReconcileRechecksNotFoundBeforeClosing(t *testing.T) {
 			entry, err := led.Begin(ledger.Intent{
 				IntentID: "sync-" + tt.name, Kind: kindOrderPlace, AccountID: "acc-1",
 				Profile: "test", OrderID: testUUID,
-				Payload: map[string]any{"endpoint": testEndpoint, "async": false},
+				Payload: map[string]any{"endpoint": testEndpoint, "async": false, "created_at": tt.createdAt},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -397,7 +435,7 @@ func TestSyncReconcileRechecksNotFoundBeforeClosing(t *testing.T) {
 			if err := entry.SendStarted(); err != nil {
 				t.Fatal(err)
 			}
-			fake := &fakeOrders{stateReplies: append([]orderStateReply(nil), tt.replies...)}
+			fake := &fakeOrders{stateReplies: append([]orderStateReply(nil), tt.replies...), todayOnlyOrders: tt.dayList}
 			conn := newOrdersConn(t, fake)
 			outcomes, cerr := reconcileFlowForTarget(
 				context.Background(), orders.New(conn), led,
@@ -423,11 +461,18 @@ func TestSyncReconcileRechecksNotFoundBeforeClosing(t *testing.T) {
 	}
 }
 
-func (f *fakeOrders) GetOrders(_ context.Context, _ *investapi.GetOrdersRequest) (*investapi.GetOrdersResponse, error) {
+func (f *fakeOrders) GetOrders(_ context.Context, req *investapi.GetOrdersRequest) (*investapi.GetOrdersResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.getOrdersReqs = append(f.getOrdersReqs, req)
 	if f.listErr != nil {
 		return nil, f.listErr
+	}
+	// ListToday sets advanced_filters (terminal-inclusive). When the test wants a
+	// distinct day-list result it sets todayOnlyOrders; otherwise both List and
+	// ListToday see openOrders.
+	if req.GetAdvancedFilters() != nil && f.todayOnlyOrders != nil {
+		return &investapi.GetOrdersResponse{Orders: f.todayOnlyOrders}, nil
 	}
 	return &investapi.GetOrdersResponse{Orders: f.openOrders}, nil
 }
@@ -480,7 +525,7 @@ func placeIntent(orderID string) (ledger.Intent, orders.PlaceParams) {
 	intent := ledger.Intent{
 		IntentID: orderID, Kind: kindOrderPlace, AccountID: "acc-1",
 		Profile: "test", Attempt: 1, OrderID: orderID,
-		Payload: orderPayload{AccountID: "acc-1", Endpoint: testEndpoint, InstrumentID: "uid-1", OrderID: orderID, Lots: 1},
+		Payload: orderPayload{AccountID: "acc-1", Endpoint: testEndpoint, InstrumentID: "uid-1", OrderID: orderID, Lots: 1, CreatedAt: time.Now().UTC().Format(time.RFC3339)},
 	}
 	params := orders.PlaceParams{
 		AccountID: "acc-1", InstrumentID: "uid-1", OrderID: orderID,
