@@ -136,13 +136,20 @@ placement or replacement mutation:
 # policy.toml
 allowed_instruments  = []          # allowlist of uids/FIGIs/TICKER@CLASSCODE; empty = allow all
 max_lots_per_order   = 100
-max_notional_per_order = "100000"  # requires notional_currency
+max_notional_per_order = "100000"  # requires notional_currency; LIMIT orders only
 notional_currency    = "rub"
 max_open_orders      = 25
 allow_market_orders  = false       # market/bestprice opt-in
 allow_shorts         = false       # short opt-in (position check is a TODO for M2)
-kill_switch_file     = "~/.config/tinvest/KILL"  # its presence blocks all mutations
+kill_switch_file     = "~/.config/tinvest/KILL"  # presence (or an unreadable path) blocks all mutations
 ```
+
+`max_notional_per_order` applies only to **limit** orders: market and bestprice
+orders have no price at the local validation stage, so their notional cannot be
+computed without a quote and the cap does not apply — `allow_market_orders` is
+their guardrail. The `kill_switch_file` check fails **closed**: if the path
+exists (switch engaged) *or* cannot be stat-ed (permission/I-O error), the
+mutation is blocked with a `POLICY` error.
 
 ### Stop orders
 

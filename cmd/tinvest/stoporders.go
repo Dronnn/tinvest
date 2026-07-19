@@ -258,6 +258,12 @@ func (a *app) runPlaceStop(cmd *cobra.Command, f *stopPlaceFlags) error {
 		Trailing:          rp.trailing,
 	}
 
+	// Re-check the kill switch immediately before the send: the operator may
+	// have engaged it during resolve / open-order lookups above (finding F11).
+	if v := pol.CheckKillSwitch(); v != nil {
+		return a.fail(mode, render.PolicyError(v.Message, v.Details), render.NewMeta(settings.AccountID, "", time.Since(start)))
+	}
+
 	resp, info, cerr := placeStopExec(cmd.Context(), stoporders.New(conn), led, intent, params)
 	meta := render.NewMeta(settings.AccountID, infoTrackingID(info), time.Since(start))
 	if cerr != nil {
@@ -781,6 +787,10 @@ func (a *app) stopOrdersCancelCmd() *cobra.Command {
 			}
 			defer func() { _ = conn.Close() }()
 
+			// Re-check the kill switch immediately before the send (finding F11).
+			if v := pol.CheckKillSwitch(); v != nil {
+				return a.fail(mode, render.PolicyError(v.Message, v.Details), render.NewMeta(settings.AccountID, "", time.Since(start)))
+			}
 			// CancelStopOrder is convergent when repeated (see
 			// stoporders.Client.Cancel's doc comment) — unlike Place, retry here
 			// is safe.

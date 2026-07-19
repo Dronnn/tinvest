@@ -43,7 +43,10 @@ type Policy struct {
 	// MaxLotsPerOrder caps lots on a single order. Zero means no cap.
 	MaxLotsPerOrder int64
 	// MaxNotionalPerOrder caps the notional value (lots * lot size * price) of
-	// a single order, as an exact decimal string. Empty means no cap.
+	// a single order, as an exact decimal string. Empty means no cap. It applies
+	// only to priced (limit) orders: market and bestprice orders have no price at
+	// the local validation stage, so they bypass this cap and are gated by
+	// AllowMarketOrders instead.
 	MaxNotionalPerOrder string
 	// NotionalCurrency is the currency MaxNotionalPerOrder is denominated in.
 	// When set, an order in a different currency cannot be checked and is
@@ -175,16 +178,28 @@ type OrderIntent struct {
 // CheckKillSwitch reports the kill-switch violation if the configured file
 // exists. It is the first gate a mutation passes and needs no order details,
 // so a command can run it before touching anything else.
+//
+// The switch fails CLOSED: a clean not-exists is the only result that lets a
+// mutation proceed. Any other stat error (permission denied, I/O error, a
+// non-directory path component) blocks the mutation with a POLICY error saying
+// the check itself failed — never proceed when we cannot determine whether the
+// operator engaged the switch (finding F11).
 func (p *Policy) CheckKillSwitch() *Violation {
 	if p == nil || p.KillSwitchFile == "" {
 		return nil
 	}
-	if _, err := os.Stat(p.KillSwitchFile); err == nil {
+	switch _, err := os.Stat(p.KillSwitchFile); {
+	case err == nil:
 		return newViolation("kill_switch",
 			fmt.Sprintf("kill switch engaged: %s exists, all mutations blocked", p.KillSwitchFile),
 			"kill_switch_file", p.KillSwitchFile)
+	case errors.Is(err, os.ErrNotExist):
+		return nil
+	default:
+		return newViolation("kill_switch",
+			fmt.Sprintf("kill switch check failed for %s: %v; refusing to proceed", p.KillSwitchFile, err),
+			"kill_switch_file", p.KillSwitchFile, "error", err.Error())
 	}
-	return nil
 }
 
 // CheckLocal runs the guardrails that need no instrument resolution: the kill
@@ -258,8 +273,12 @@ func (p *Policy) checkNotional(in OrderIntent) *Violation {
 	if p.MaxNotionalPerOrder == "" {
 		return nil
 	}
-	// Market orders carry no price at validation time, so their notional is
-	// unknown; the market-order opt-in is the guardrail that gates them.
+	// Market and bestprice orders carry no price at this local, pre-network
+	// validation stage, so their notional cannot be computed without a quote
+	// (GetOrderPrice / last price) — a network call the policy layer is
+	// deliberately free of. max_notional therefore does NOT apply to market
+	// orders; allow_market_orders is their guardrail (see the field docs and
+	// README). This is a documented bypass, not an oversight (finding F11).
 	if in.Price == nil {
 		return nil
 	}
@@ -273,8 +292,12 @@ func (p *Policy) checkNotional(in OrderIntent) *Violation {
 	if lotSize <= 0 {
 		lotSize = 1
 	}
+	// lots * lotSize can overflow int64 for extreme lot counts, which would wrap
+	// to a small or negative value and silently slip a huge order under the cap.
+	// Do the multiplication in big.Int so the notional is always exact (F11).
+	lotTotal := new(big.Int).Mul(big.NewInt(in.Lots), big.NewInt(lotSize))
 	notional := quotationRat(in.Price)
-	notional.Mul(notional, big.NewRat(in.Lots*lotSize, 1))
+	notional.Mul(notional, new(big.Rat).SetInt(lotTotal))
 
 	limitQ, err := render.ParseQuotation(p.MaxNotionalPerOrder)
 	if err != nil {

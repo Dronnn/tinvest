@@ -43,6 +43,11 @@ func DefaultLimits() []Limit {
 			investapi.InstrumentsService_Futures_FullMethodName,
 			investapi.InstrumentsService_Options_FullMethodName,
 			investapi.InstrumentsService_Shares_FullMethodName,
+			// The June 2026 API update caps the assets endpoints at 15/min in the
+			// same group as the six instrument lists. The CLI doesn't call them
+			// today, but the limiter models the published limit.
+			investapi.InstrumentsService_GetAssets_FullMethodName,
+			investapi.InstrumentsService_GetAssetBy_FullMethodName,
 		}, PerMinute: 15, Burst: 1},
 		{Group: "instruments", Services: []string{"InstrumentsService"}, PerMinute: 200, Burst: 10},
 		{Group: "operations", Services: []string{"OperationsService"}, PerMinute: 300, Burst: 10},

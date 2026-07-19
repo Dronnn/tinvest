@@ -278,6 +278,15 @@ func (a *app) runPlace(cmd *cobra.Command, f *placeFlags) error {
 		ConfirmMarginTrade: rp.confirmMarginTrade,
 	}
 
+	// Re-check the kill switch immediately before the send: the operator may
+	// have engaged it during the resolve / open-order lookups above, and it must
+	// take effect before the order actually goes out (finding F11). This is the
+	// last point before the ledger's send-started write, so a hit here leaves no
+	// spurious unresolved entry.
+	if v := pol.CheckKillSwitch(); v != nil {
+		return a.fail(mode, render.PolicyError(v.Message, v.Details), render.NewMeta(settings.AccountID, "", time.Since(start)))
+	}
+
 	out, cerr := placeExec(cmd.Context(), cl, led, intent, params, rp.async)
 	meta := render.NewMeta(settings.AccountID, out.trackingID(), time.Since(start))
 	if cerr != nil {
@@ -684,6 +693,10 @@ func (a *app) ordersCancelCmd() *cobra.Command {
 			}
 			defer func() { _ = conn.Close() }()
 
+			// Re-check the kill switch immediately before the send (finding F11).
+			if v := pol.CheckKillSwitch(); v != nil {
+				return a.fail(mode, render.PolicyError(v.Message, v.Details), render.NewMeta(settings.AccountID, "", time.Since(start)))
+			}
 			// CancelOrder is convergent when repeated, so retry is safe.
 			ctx, info := transport.WithCallInfo(retry.Idempotent(cmd.Context()))
 			resp, err := orders.New(conn).Cancel(ctx, settings.AccountID, args[0])
@@ -783,6 +796,13 @@ func (a *app) ordersReplaceCmd() *cobra.Command {
 				return a.fail(mode, &render.CLIError{Code: render.CodeInternal, Message: err.Error()}, render.NewMeta(settings.AccountID, "", time.Since(start)))
 			}
 			defer func() { _ = led.Close() }()
+
+			// Re-check the kill switch just before the send: the state lookup
+			// and instrument resolution above are a window in which the operator
+			// may have engaged it (finding F11).
+			if v := pol.CheckKillSwitch(); v != nil {
+				return a.fail(mode, render.PolicyError(v.Message, v.Details), render.NewMeta(settings.AccountID, "", time.Since(start)))
+			}
 
 			entry, err := led.Begin(ledger.Intent{
 				IntentID: key, Kind: kindOrderReplace, AccountID: settings.AccountID,

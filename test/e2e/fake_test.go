@@ -32,6 +32,10 @@ type fakeServer struct {
 	// NOT_FOUND lookup respectively when nil.
 	onPostOrder func(context.Context, *investapi.PostOrderRequest) (*investapi.PostOrderResponse, error)
 	onGetState  func(context.Context, *investapi.GetOrderStateRequest) (*investapi.OrderState, error)
+	// onGetInstrument, when set, runs as a side effect during instrument
+	// resolution (the response is unchanged). Used to simulate the operator
+	// engaging the kill switch mid-flight, after the initial policy gate.
+	onGetInstrument func()
 
 	mu           sync.Mutex
 	postOrders   []*investapi.PostOrderRequest
@@ -75,13 +79,26 @@ func newFakeServer(t *testing.T) *fakeServer {
 // 127.0.0.1 IP SAN.
 func (f *fakeServer) endpoint() string { return "127.0.0.1:" + f.port }
 
+// setOnGetInstrument installs the resolution side-effect hook under the mutex,
+// so it is synchronized with the server goroutine that reads it (the write must
+// happen-before the handler's read, which the shared mutex guarantees).
+func (f *fakeServer) setOnGetInstrument(fn func()) {
+	f.mu.Lock()
+	f.onGetInstrument = fn
+	f.mu.Unlock()
+}
+
 // GetInstrumentBy echoes the requested id back as a fully-formed instrument so
 // resolution, the resolved-policy checks, and the price-increment check all
 // pass (min price increment is left nil, which skips the increment check).
 func (f *fakeServer) GetInstrumentBy(_ context.Context, req *investapi.InstrumentRequest) (*investapi.InstrumentResponse, error) {
 	f.mu.Lock()
 	f.instrLookups = append(f.instrLookups, req)
+	hook := f.onGetInstrument
 	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	return &investapi.InstrumentResponse{Instrument: &investapi.Instrument{
 		Uid:       req.GetId(),
 		Figi:      "BBG000000TST",
