@@ -47,6 +47,7 @@ type fakeOrders struct {
 	stateReplies   []orderStateReply
 
 	openOrders []*investapi.OrderState
+	listErr    error
 
 	previewResp *investapi.GetOrderPriceResponse
 	maxLotsResp *investapi.GetMaxLotsResponse
@@ -128,7 +129,7 @@ func TestOrdersReconcileSkipsForeignKindsAndReportsThem(t *testing.T) {
 	outcomes, cerr := reconcileFlowForTarget(
 		context.Background(), orders.New(conn), led,
 		reconcileTarget{Profile: "test", Endpoint: testEndpoint},
-		reconcileOptions{AsyncNotFoundDelay: 0},
+		reconcileOptions{SyncNotFoundDelay: 0},
 	)
 	if cerr != nil {
 		t.Fatalf("reconcile: %+v", cerr)
@@ -188,7 +189,7 @@ func TestOrdersReconcileSkipsMismatchedProfileAndEndpoint(t *testing.T) {
 			outcomes, cerr := reconcileFlowForTarget(
 				context.Background(), orders.New(conn), led,
 				reconcileTarget{Profile: tt.activeProfile, Endpoint: tt.activeEndpoint},
-				reconcileOptions{AsyncNotFoundDelay: 0},
+				reconcileOptions{SyncNotFoundDelay: 0},
 			)
 			if cerr != nil {
 				t.Fatalf("reconcile: %+v", cerr)
@@ -226,7 +227,7 @@ func TestOrdersReconcileLeavesLegacyEndpointlessIntentIndeterminate(t *testing.T
 	outcomes, cerr := reconcileFlowForTarget(
 		context.Background(), orders.New(conn), led,
 		reconcileTarget{Profile: "test", Endpoint: testEndpoint},
-		reconcileOptions{AsyncNotFoundDelay: 0},
+		reconcileOptions{SyncNotFoundDelay: 0},
 	)
 	if cerr != nil {
 		t.Fatalf("reconcile: %+v", cerr)
@@ -239,7 +240,87 @@ func TestOrdersReconcileLeavesLegacyEndpointlessIntentIndeterminate(t *testing.T
 	}
 }
 
-func TestAsyncReconcileConfirmsNotFoundBeforeClosing(t *testing.T) {
+// TestAsyncReconcileNeverClosesNotPlacedOnNotFound: a PostOrderAsync intent that
+// reads NOT_FOUND from GetOrderState must never be closed as not-placed. It is
+// resolved from the day's order list by order_request_id, or left unresolved for
+// a later run. Async does a single GetOrderState (no 2s double-check).
+func TestAsyncReconcileNeverClosesNotPlacedOnNotFound(t *testing.T) {
+	tests := []struct {
+		name           string
+		openOrders     []*investapi.OrderState
+		listErr        error
+		wantOutcome    string
+		wantUnresolved int
+	}{
+		{
+			name: "found in the day's order list",
+			openOrders: []*investapi.OrderState{
+				{OrderId: "exch-async-1", OrderRequestId: testUUID, ExecutionReportStatus: investapi.OrderExecutionReportStatus_EXECUTION_REPORT_STATUS_NEW},
+			},
+			wantOutcome: "placed", wantUnresolved: 0,
+		},
+		{
+			name:        "absent from the list stays unresolved",
+			wantOutcome: "unresolved", wantUnresolved: 1,
+		},
+		{
+			name:        "order-list lookup failure is indeterminate",
+			listErr:     status.Error(codes.PermissionDenied, "cannot confirm"),
+			wantOutcome: "indeterminate", wantUnresolved: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			led := testLedger(t)
+			entry, err := led.Begin(ledger.Intent{
+				IntentID: "async-" + tt.name, Kind: kindOrderPlace, AccountID: "acc-1",
+				Profile: "test", OrderID: testUUID,
+				Payload: map[string]any{"endpoint": testEndpoint, "async": true},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := entry.SendStarted(); err != nil {
+				t.Fatal(err)
+			}
+			fake := &fakeOrders{
+				stateReplies: []orderStateReply{{err: status.Error(codes.NotFound, "not propagated")}},
+				openOrders:   tt.openOrders,
+				listErr:      tt.listErr,
+			}
+			conn := newOrdersConn(t, fake)
+			outcomes, cerr := reconcileFlowForTarget(
+				context.Background(), orders.New(conn), led,
+				reconcileTarget{Profile: "test", Endpoint: testEndpoint},
+				reconcileOptions{SyncNotFoundDelay: 0},
+			)
+			if cerr != nil {
+				t.Fatalf("reconcile: %+v", cerr)
+			}
+			if len(outcomes) != 1 || outcomes[0].Outcome != tt.wantOutcome {
+				t.Fatalf("outcomes = %+v, want %s", outcomes, tt.wantOutcome)
+			}
+			if outcomes[0].Outcome == "not-placed" {
+				t.Fatal("async intent must never be closed as not-placed on NOT_FOUND")
+			}
+			fake.mu.Lock()
+			stateCalls := fake.stateCalls
+			fake.mu.Unlock()
+			if stateCalls != 1 {
+				t.Fatalf("GetOrderState calls = %d, want 1 (async must not double-check)", stateCalls)
+			}
+			if unresolved, _ := led.Unresolved(); len(unresolved) != tt.wantUnresolved {
+				t.Fatalf("unresolved = %d, want %d", len(unresolved), tt.wantUnresolved)
+			}
+		})
+	}
+}
+
+// TestSyncReconcileRechecksNotFoundBeforeClosing: a synchronous PostOrder intent
+// re-checks a NOT_FOUND once (after the delay) before deciding, since NOT_FOUND
+// for a synchronous order is meaningful.
+func TestSyncReconcileRechecksNotFoundBeforeClosing(t *testing.T) {
 	tests := []struct {
 		name           string
 		replies        []orderStateReply
@@ -247,7 +328,7 @@ func TestAsyncReconcileConfirmsNotFoundBeforeClosing(t *testing.T) {
 		wantUnresolved int
 	}{
 		{
-			name: "appears on delayed recheck",
+			name: "appears on the recheck",
 			replies: []orderStateReply{
 				{err: status.Error(codes.NotFound, "not propagated")},
 				{state: &investapi.OrderState{OrderId: "exchange-1", ExecutionReportStatus: investapi.OrderExecutionReportStatus_EXECUTION_REPORT_STATUS_NEW}},
@@ -255,7 +336,7 @@ func TestAsyncReconcileConfirmsNotFoundBeforeClosing(t *testing.T) {
 			wantOutcome: "placed", wantUnresolved: 0,
 		},
 		{
-			name: "two not found responses",
+			name: "two not found responses close not-placed",
 			replies: []orderStateReply{
 				{err: status.Error(codes.NotFound, "first")},
 				{err: status.Error(codes.NotFound, "second")},
@@ -276,9 +357,9 @@ func TestAsyncReconcileConfirmsNotFoundBeforeClosing(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			led := testLedger(t)
 			entry, err := led.Begin(ledger.Intent{
-				IntentID: "async-" + tt.name, Kind: kindOrderPlace, AccountID: "acc-1",
+				IntentID: "sync-" + tt.name, Kind: kindOrderPlace, AccountID: "acc-1",
 				Profile: "test", OrderID: testUUID,
-				Payload: map[string]any{"endpoint": testEndpoint, "async": true},
+				Payload: map[string]any{"endpoint": testEndpoint, "async": false},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -291,7 +372,7 @@ func TestAsyncReconcileConfirmsNotFoundBeforeClosing(t *testing.T) {
 			outcomes, cerr := reconcileFlowForTarget(
 				context.Background(), orders.New(conn), led,
 				reconcileTarget{Profile: "test", Endpoint: testEndpoint},
-				reconcileOptions{AsyncNotFoundDelay: 0},
+				reconcileOptions{SyncNotFoundDelay: 0},
 			)
 			if cerr != nil {
 				t.Fatalf("reconcile: %+v", cerr)
@@ -303,7 +384,7 @@ func TestAsyncReconcileConfirmsNotFoundBeforeClosing(t *testing.T) {
 			stateCalls := fake.stateCalls
 			fake.mu.Unlock()
 			if stateCalls != 2 {
-				t.Fatalf("GetOrderState calls = %d, want 2", stateCalls)
+				t.Fatalf("GetOrderState calls = %d, want 2 (sync double-check)", stateCalls)
 			}
 			if unresolved, _ := led.Unresolved(); len(unresolved) != tt.wantUnresolved {
 				t.Fatalf("unresolved = %d, want %d", len(unresolved), tt.wantUnresolved)
@@ -315,6 +396,9 @@ func TestAsyncReconcileConfirmsNotFoundBeforeClosing(t *testing.T) {
 func (f *fakeOrders) GetOrders(_ context.Context, _ *investapi.GetOrdersRequest) (*investapi.GetOrdersResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	return &investapi.GetOrdersResponse{Orders: f.openOrders}, nil
 }
 
@@ -487,7 +571,7 @@ func TestPlaceAmbiguousExitSevenThenReconcile(t *testing.T) {
 	outcomes, rcerr := reconcileFlowForTarget(
 		context.Background(), orders.New(recConn), led,
 		reconcileTarget{Profile: "test", Endpoint: testEndpoint},
-		reconcileOptions{AsyncNotFoundDelay: 0},
+		reconcileOptions{SyncNotFoundDelay: 0},
 	)
 	if rcerr != nil {
 		t.Fatalf("reconcile failed: %+v", rcerr)
@@ -522,7 +606,7 @@ func TestReconcileNotFoundMarksNotPlaced(t *testing.T) {
 	outcomes, cerr := reconcileFlowForTarget(
 		context.Background(), orders.New(conn), led,
 		reconcileTarget{Profile: "test", Endpoint: testEndpoint},
-		reconcileOptions{AsyncNotFoundDelay: 0},
+		reconcileOptions{SyncNotFoundDelay: 0},
 	)
 	if cerr != nil {
 		t.Fatalf("reconcile: %+v", cerr)

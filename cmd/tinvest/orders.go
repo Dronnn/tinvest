@@ -1115,10 +1115,13 @@ type reconcileTarget struct {
 }
 
 type reconcileOptions struct {
-	AsyncNotFoundDelay time.Duration
+	// SyncNotFoundDelay is how long to wait before the confirming re-check of a
+	// synchronous intent that first read NOT_FOUND. Async intents are never
+	// closed on NOT_FOUND, so this does not apply to them.
+	SyncNotFoundDelay time.Duration
 }
 
-const asyncReconcileNotFoundDelay = 2 * time.Second
+const syncReconcileNotFoundDelay = 2 * time.Second
 
 func newReconcileData(outcomes []render.ReconcileOutcomeView, foreignHint string) reconcileData {
 	data := reconcileData{Outcomes: outcomes}
@@ -1160,7 +1163,7 @@ func (a *app) ordersReconcileCmd() *cobra.Command {
 			outcomes, cerr := reconcileFlowForTarget(
 				cmd.Context(), orders.New(conn), led,
 				reconcileTarget{Profile: settings.Profile, Endpoint: settings.Endpoint},
-				reconcileOptions{AsyncNotFoundDelay: asyncReconcileNotFoundDelay},
+				reconcileOptions{SyncNotFoundDelay: syncReconcileNotFoundDelay},
 			)
 			meta := render.NewMeta(settings.AccountID, "", time.Since(start))
 			if cerr != nil {
@@ -1176,8 +1179,17 @@ func (a *app) ordersReconcileCmd() *cobra.Command {
 
 // reconcileFlowForTarget resolves regular order placement/replacement intents
 // only. Foreign intent kinds and intents recorded for another profile or
-// endpoint are reported and left untouched. Async placements require a second
-// delayed NOT_FOUND before they can be closed as not placed.
+// endpoint are reported and left untouched.
+//
+// NOT_FOUND is handled differently by placement mode. A synchronous PostOrder is
+// queryable immediately once accepted, so a persistent NOT_FOUND is meaningful:
+// it is re-checked once after a short delay (to absorb a transient miss) and then
+// closed as not-placed. A PostOrderAsync order is NOT queryable via
+// GetOrderState until the exchange assigns its id — which arrives over the orders
+// stream with no documented upper bound — so NOT_FOUND must never close it as
+// not-placed. Instead the day's order list is scanned for the exchange order by
+// order_request_id; if it is not there either, the intent is left unresolved for
+// a later run (see reconcileAsyncNotFound).
 func reconcileFlowForTarget(
 	ctx context.Context,
 	cl orders.Client,
@@ -1225,30 +1237,33 @@ func reconcileFlowForTarget(
 		cctx, info := transport.WithCallInfo(ctx)
 		state, err := cl.Get(cctx, e.AccountID(), e.OrderID(), true)
 		if err != nil {
-			if status.Code(err) == codes.NotFound {
-				if payload.Async {
-					state, info, err = recheckAsyncNotFound(ctx, cl, e, options.AsyncNotFoundDelay)
-					if err != nil && status.Code(err) != codes.NotFound {
-						out.Outcome = "indeterminate"
-						out.Error = fmt.Sprintf("one NOT_FOUND was observed, but confirmation failed; retry reconcile later: %s", render.Classify(err, callContext(info, false)).Message)
-						outcomes = append(outcomes, out)
-						continue
-					}
-					if err == nil {
-						setPlacedReconcileOutcome(&out, state)
-						_ = e.Reconciled(ledger.Result{OrderID: state.GetOrderId(), TrackingID: info.TrackingID()})
-						outcomes = append(outcomes, out)
-						continue
-					}
-				}
-				out.Outcome = "not-placed"
-				_ = e.Reconciled(ledger.Result{Error: "not-placed"})
-			} else {
+			if status.Code(err) != codes.NotFound {
 				out.Outcome = "error"
 				out.Error = render.Classify(err, callContext(info, false)).Message
+				outcomes = append(outcomes, out)
+				continue
 			}
-			outcomes = append(outcomes, out)
-			continue
+			// NOT_FOUND. Async orders are not queryable until exchange acceptance,
+			// so they are never closed here; sync orders get a confirming re-check.
+			if payload.Async {
+				reconcileAsyncNotFound(ctx, cl, e, &out)
+				outcomes = append(outcomes, out)
+				continue
+			}
+			state, info, err = recheckNotFound(ctx, cl, e, options.SyncNotFoundDelay)
+			if err != nil && status.Code(err) != codes.NotFound {
+				out.Outcome = "indeterminate"
+				out.Error = fmt.Sprintf("one NOT_FOUND was observed, but confirmation failed; retry reconcile later: %s", render.Classify(err, callContext(info, false)).Message)
+				outcomes = append(outcomes, out)
+				continue
+			}
+			if err != nil {
+				out.Outcome = "not-placed"
+				_ = e.Reconciled(ledger.Result{Error: "not-placed"})
+				outcomes = append(outcomes, out)
+				continue
+			}
+			// The re-check found it after all.
 		}
 		setPlacedReconcileOutcome(&out, state)
 		_ = e.Reconciled(ledger.Result{OrderID: state.GetOrderId(), TrackingID: info.TrackingID()})
@@ -1257,7 +1272,10 @@ func reconcileFlowForTarget(
 	return outcomes, nil
 }
 
-func recheckAsyncNotFound(
+// recheckNotFound waits out a short delay and re-queries GetOrderState, used to
+// confirm a synchronous intent's NOT_FOUND is persistent (not a transient miss)
+// before it is closed as not-placed.
+func recheckNotFound(
 	ctx context.Context,
 	cl orders.Client,
 	entry *ledger.Entry,
@@ -1276,6 +1294,34 @@ func recheckAsyncNotFound(
 	cctx, info := transport.WithCallInfo(ctx)
 	state, err := cl.Get(cctx, entry.AccountID(), entry.OrderID(), true)
 	return state, info, err
+}
+
+// reconcileAsyncNotFound resolves a GetOrderState NOT_FOUND for an async
+// (PostOrderAsync) intent. Per the API, such an order is not queryable via
+// GetOrderState until the exchange assigns its id (delivered over the orders
+// stream, with no documented upper bound), so NOT_FOUND must never close it as
+// not-placed. It scans the day's order list for the exchange order by
+// order_request_id; if found the intent is closed as placed, otherwise it is
+// left UNRESOLVED (no Reconciled call) with guidance to retry later or watch the
+// orders stream.
+func reconcileAsyncNotFound(ctx context.Context, cl orders.Client, e *ledger.Entry, out *render.ReconcileOutcomeView) {
+	lctx, info := transport.WithCallInfo(ctx)
+	list, err := cl.List(lctx, e.AccountID())
+	if err != nil {
+		out.Outcome = "indeterminate"
+		out.Error = fmt.Sprintf("async order is not yet visible via GetOrderState and the order-list lookup failed; retry reconcile later: %s", render.Classify(err, callContext(info, false)).Message)
+		return
+	}
+	for _, s := range list {
+		if rid := s.GetOrderRequestId(); rid != "" && rid == e.OrderID() {
+			setPlacedReconcileOutcome(out, s)
+			_ = e.Reconciled(ledger.Result{OrderID: s.GetOrderId(), TrackingID: info.TrackingID()})
+			return
+		}
+	}
+	// Not confirmable yet: leave the intent unresolved for a later run.
+	out.Outcome = "unresolved"
+	out.Error = fmt.Sprintf("async order is not yet visible: PostOrderAsync orders become queryable only after exchange acceptance, with no fixed delay. Re-run `%s` later, or watch `tinvest stream orders --account %s`", reconcileCommand, e.AccountID())
 }
 
 func setPlacedReconcileOutcome(out *render.ReconcileOutcomeView, state *investapi.OrderState) {
