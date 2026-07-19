@@ -45,8 +45,8 @@ func Expiration(s string) (investapi.StopOrderExpirationType, error) {
 	}
 }
 
-// ExchangeOrderType parses the CLI --exchange-order-type flag. An empty
-// string defaults to market, matching the broker's documented default.
+// ExchangeOrderType parses the take-profit-only CLI --exchange-order-type
+// flag. An empty string defaults to market.
 func ExchangeOrderType(s string) (investapi.ExchangeOrderType, error) {
 	switch s {
 	case "", "market":
@@ -176,6 +176,14 @@ func ValidateBasics(in BasicsInput) error {
 		if isZeroQuotation(in.Trailing.Indent) || isZeroQuotation(in.Trailing.Spread) {
 			return fmt.Errorf("trailing requires non-zero --trailing-indent and --trailing-spread")
 		}
+	}
+	if in.StopOrderType != investapi.StopOrderType_STOP_ORDER_TYPE_TAKE_PROFIT &&
+		in.TakeProfitType != investapi.TakeProfitType_TAKE_PROFIT_TYPE_UNSPECIFIED {
+		return fmt.Errorf("--take-profit-type is only valid with --type take-profit")
+	}
+	if in.StopOrderType != investapi.StopOrderType_STOP_ORDER_TYPE_TAKE_PROFIT &&
+		in.ExchangeOrderType != investapi.ExchangeOrderType_EXCHANGE_ORDER_TYPE_UNSPECIFIED {
+		return fmt.Errorf("--exchange-order-type is only valid with --type take-profit")
 	}
 	if in.TakeProfitType == investapi.TakeProfitType_TAKE_PROFIT_TYPE_TRAILING {
 		if in.StopOrderType != investapi.StopOrderType_STOP_ORDER_TYPE_TAKE_PROFIT {

@@ -69,25 +69,27 @@ type PlaceParams struct {
 // surface as exit 7 with a reconcile hint, not to retry here.
 func (c Client) Place(ctx context.Context, p PlaceParams) (*investapi.PostStopOrderResponse, error) {
 	req := &investapi.PostStopOrderRequest{
-		InstrumentId:      p.InstrumentID,
-		AccountId:         p.AccountID,
-		OrderId:           p.OrderID,
-		Direction:         p.Direction,
-		StopOrderType:     p.StopOrderType,
-		Quantity:          p.Quantity,
-		Price:             p.Price,
-		StopPrice:         p.StopPrice,
-		ExpirationType:    p.ExpirationType,
-		ExpireDate:        p.ExpireDate,
-		ExchangeOrderType: p.ExchangeOrderType,
-		TakeProfitType:    p.TakeProfitType,
+		InstrumentId:   p.InstrumentID,
+		AccountId:      p.AccountID,
+		OrderId:        p.OrderID,
+		Direction:      p.Direction,
+		StopOrderType:  p.StopOrderType,
+		Quantity:       p.Quantity,
+		Price:          p.Price,
+		StopPrice:      p.StopPrice,
+		ExpirationType: p.ExpirationType,
+		ExpireDate:     p.ExpireDate,
 	}
-	if p.Trailing != nil {
-		req.TrailingData = &investapi.PostStopOrderRequest_TrailingData{
-			Indent:     p.Trailing.Indent,
-			IndentType: p.Trailing.IndentType,
-			Spread:     p.Trailing.Spread,
-			SpreadType: p.Trailing.SpreadType,
+	if p.StopOrderType == investapi.StopOrderType_STOP_ORDER_TYPE_TAKE_PROFIT {
+		req.ExchangeOrderType = p.ExchangeOrderType
+		req.TakeProfitType = p.TakeProfitType
+		if p.Trailing != nil {
+			req.TrailingData = &investapi.PostStopOrderRequest_TrailingData{
+				Indent:     p.Trailing.Indent,
+				IndentType: p.Trailing.IndentType,
+				Spread:     p.Trailing.Spread,
+				SpreadType: p.Trailing.SpreadType,
+			}
 		}
 	}
 	return c.api.PostStopOrder(ctx, req)

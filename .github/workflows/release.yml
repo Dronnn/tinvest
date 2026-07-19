@@ -24,6 +24,23 @@ jobs:
           go-version: "1.26.x"
           cache: true
 
+      - name: make build
+        run: make build
+
+      - name: make vet
+        run: make vet
+
+      - name: make lint
+        run: make lint
+
+      # Windows-specific ledger locking has no native CI coverage in this
+      # workflow; release gating runs on Linux, matching the existing runners.
+      - name: make test
+        run: make test
+
+      - name: GoReleaser configuration check
+        run: make release-check
+
       - name: Run GoReleaser
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -39,19 +39,38 @@ func (p Phase) String() string {
 // CallInfo collects per-call observations made by the transport layer:
 // call phase, x-tracking-id, rate-limit reset, and the human-readable error
 // description the broker puts in the "message" trailer.
+//
+// Phase is derived from two facts rather than a single monotonic value so that,
+// across retry attempts sharing this CallInfo, the classification reflects the
+// FINAL attempt's outcome (plan §7/§9, finding F1): `sent` is a high-water mark
+// (any attempt that reached the wire may have reached the broker), while
+// `confirmed` is reset at the start of each attempt (beginAttempt) and set only
+// if THAT attempt received a definitive server response. Without the reset, an
+// earlier attempt that confirmed would mask a final attempt that ended
+// sent_unconfirmed, misclassifying an unconfirmable mutation as exit 6 instead
+// of exit 7.
 type CallInfo struct {
 	mu         sync.Mutex
-	phase      Phase
+	sent       bool // any attempt put the request on the wire (monotonic)
+	confirmed  bool // the LAST attempt received a definitive server response
 	trackingID string
 	apiMessage string
 	retryAfter time.Duration
 }
 
-// Phase returns the phase the call ended in.
+// Phase returns the phase the call ended in, derived from the final attempt's
+// confirmation and whether any attempt reached the wire.
 func (c *CallInfo) Phase() Phase {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.phase
+	switch {
+	case c.confirmed:
+		return PhaseConfirmed
+	case c.sent:
+		return PhaseSentUnconfirmed
+	default:
+		return PhaseNotSent
+	}
 }
 
 // TrackingID returns the x-tracking-id sent by the broker, if any.
@@ -76,18 +95,27 @@ func (c *CallInfo) RetryAfter() time.Duration {
 	return c.retryAfter
 }
 
+// beginAttempt resets the per-attempt confirmation at the start of each RPC
+// attempt (stats.Begin) so the final classification reflects the LAST attempt,
+// not a high-water mark. `sent` is deliberately NOT reset: if any attempt
+// reached the wire the mutation may have reached the broker, so that fact must
+// survive a later attempt that never sent.
+func (c *CallInfo) beginAttempt() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.confirmed = false
+}
+
 func (c *CallInfo) markSent() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.phase == PhaseNotSent {
-		c.phase = PhaseSentUnconfirmed
-	}
+	c.sent = true
 }
 
 func (c *CallInfo) markConfirmed() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.phase = PhaseConfirmed
+	c.confirmed = true
 }
 
 func (c *CallInfo) captureMD(md metadata.MD) {
@@ -135,6 +163,8 @@ func (phaseStats) HandleRPC(ctx context.Context, s stats.RPCStats) {
 		return
 	}
 	switch s := s.(type) {
+	case *stats.Begin:
+		info.beginAttempt()
 	case *stats.OutPayload:
 		info.markSent()
 	case *stats.InHeader:

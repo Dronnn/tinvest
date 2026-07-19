@@ -87,8 +87,8 @@ func (a *app) stopOrdersPlaceCmd() *cobra.Command {
 	fl.StringVar(&f.price, "price", "", "limit price as a decimal string (required for stop-limit only)")
 	fl.StringVar(&f.expiration, "expiration", "gtc", "gtc or gtd")
 	fl.StringVar(&f.expireDate, "expire-date", "", "RFC3339 timestamp; required when --expiration gtd")
-	fl.StringVar(&f.exchangeOrderType, "exchange-order-type", "market", "market or limit: the child order type placed on activation")
-	fl.StringVar(&f.takeProfitType, "take-profit-type", "regular", "regular or trailing (take-profit only)")
+	fl.StringVar(&f.exchangeOrderType, "exchange-order-type", "", "market or limit: the child order type for take-profit orders (default market)")
+	fl.StringVar(&f.takeProfitType, "take-profit-type", "", "regular or trailing (take-profit only; default regular for take-profit)")
 	fl.StringVar(&f.trailingIndent, "trailing-indent", "", "trailing take-profit indent, decimal string")
 	fl.StringVar(&f.trailingIndentType, "trailing-indent-type", "", "absolute or relative")
 	fl.StringVar(&f.trailingSpread, "trailing-spread", "", "trailing take-profit protective spread, decimal string")
@@ -240,7 +240,7 @@ func (a *app) runPlaceStop(cmd *cobra.Command, f *stopPlaceFlags) error {
 		Profile:   settings.Profile,
 		Attempt:   1,
 		OrderID:   rp.orderID,
-		Payload:   stopOrderPayloadFrom(settings.AccountID, uid, rp),
+		Payload:   stopOrderPayloadFrom(settings.AccountID, settings.Endpoint, uid, time.Now().UTC(), rp),
 	}
 	params := stoporders.PlaceParams{
 		AccountID:         settings.AccountID,
@@ -288,7 +288,7 @@ type stopDryRunView struct {
 	Price             string `json:"price,omitempty"`
 	Expiration        string `json:"expiration"`
 	ExpireDate        string `json:"expire_date,omitempty"`
-	ExchangeOrderType string `json:"exchange_order_type"`
+	ExchangeOrderType string `json:"exchange_order_type,omitempty"`
 	TakeProfitType    string `json:"take_profit_type,omitempty"`
 }
 
@@ -390,34 +390,58 @@ func stopToOrderDirection(d investapi.StopOrderDirection) investapi.OrderDirecti
 // stopOrderPayload is the token-free request document journaled at Begin
 // (plan §10), and the record reconcileStopFlow matches list results against.
 type stopOrderPayload struct {
-	AccountID         string `json:"account_id"`
-	InstrumentID      string `json:"instrument_id"`
-	OrderID           string `json:"order_id"`
-	Direction         string `json:"direction"`
-	StopOrderType     string `json:"stop_order_type"`
-	Quantity          int64  `json:"quantity"`
-	Price             string `json:"price,omitempty"`
-	StopPrice         string `json:"stop_price"`
-	ExpirationType    string `json:"expiration_type"`
-	ExpireDate        string `json:"expire_date,omitempty"`
-	ExchangeOrderType string `json:"exchange_order_type"`
-	TakeProfitType    string `json:"take_profit_type,omitempty"`
+	AccountID          string `json:"account_id"`
+	Endpoint           string `json:"endpoint"`
+	InstrumentID       string `json:"instrument_id"`
+	OrderID            string `json:"order_id"`
+	Direction          string `json:"direction"`
+	StopOrderType      string `json:"stop_order_type"`
+	Quantity           int64  `json:"quantity"`
+	Price              string `json:"price,omitempty"`
+	StopPrice          string `json:"stop_price"`
+	ExpirationType     string `json:"expiration_type"`
+	ExpireDate         string `json:"expire_date,omitempty"`
+	ExchangeOrderType  string `json:"exchange_order_type,omitempty"`
+	TakeProfitType     string `json:"take_profit_type,omitempty"`
+	TrailingIndent     string `json:"trailing_indent,omitempty"`
+	TrailingIndentType string `json:"trailing_indent_type,omitempty"`
+	TrailingSpread     string `json:"trailing_spread,omitempty"`
+	TrailingSpreadType string `json:"trailing_spread_type,omitempty"`
+	CreatedAt          string `json:"created_at"`
 }
 
-func stopOrderPayloadFrom(accountID, uid string, rp resolvedStopPlace) stopOrderPayload {
+func stopOrderPayloadFrom(accountID, endpoint, uid string, createdAt time.Time, rp resolvedStopPlace) stopOrderPayload {
+	exchangeOrderType := ""
+	takeProfitType := ""
+	trailingIndentType := ""
+	trailingSpreadType := ""
+	if rp.stopOrderType == investapi.StopOrderType_STOP_ORDER_TYPE_TAKE_PROFIT {
+		exchangeOrderType = rp.exchangeOrderType.String()
+		takeProfitType = rp.takeProfitType.String()
+		if rp.trailing != nil {
+			trailingIndentType = rp.trailing.IndentType.String()
+			trailingSpreadType = rp.trailing.SpreadType.String()
+		}
+	}
 	return stopOrderPayload{
-		AccountID:         accountID,
-		InstrumentID:      uid,
-		OrderID:           rp.orderID,
-		Direction:         rp.direction.String(),
-		StopOrderType:     rp.stopOrderType.String(),
-		Quantity:          rp.quantity,
-		Price:             rp.priceStr,
-		StopPrice:         rp.stopPriceStr,
-		ExpirationType:    rp.expirationType.String(),
-		ExpireDate:        rp.expireDateStr,
-		ExchangeOrderType: rp.exchangeOrderType.String(),
-		TakeProfitType:    rp.takeProfitTypeStr,
+		AccountID:          accountID,
+		Endpoint:           endpoint,
+		InstrumentID:       uid,
+		OrderID:            rp.orderID,
+		Direction:          rp.direction.String(),
+		StopOrderType:      rp.stopOrderType.String(),
+		Quantity:           rp.quantity,
+		Price:              rp.priceStr,
+		StopPrice:          rp.stopPriceStr,
+		ExpirationType:     rp.expirationType.String(),
+		ExpireDate:         rp.expireDateStr,
+		ExchangeOrderType:  exchangeOrderType,
+		TakeProfitType:     takeProfitType,
+		TrailingIndent:     rp.trailingIndentStr,
+		TrailingIndentType: trailingIndentType,
+		TrailingSpread:     rp.trailingSpreadStr,
+		TrailingSpreadType: trailingSpreadType,
+		CreatedAt:          createdAt.Format(time.RFC3339Nano),
 	}
 }
 
@@ -441,7 +465,7 @@ func stopOrderPayloadFrom(accountID, uid string, rp resolvedStopPlace) stopOrder
 //	  "trailing_indent_type":  "absolute" | "relative",
 //	  "trailing_spread":       "<decimal string>",
 //	  "trailing_spread_type":  "absolute" | "relative",
-//	  "order_id":              "<uuid, <=36 chars>",                // optional; generated
+//	  "order_id":              "<uuid>",                            // optional; generated
 //	  "dry_run":                <bool>                              // optional
 //	}
 //
@@ -536,13 +560,27 @@ func buildStopPlace(in stopPlaceInput) (resolvedStopPlace, *render.CLIError) {
 	if err != nil {
 		return resolvedStopPlace{}, render.UsageError(err.Error())
 	}
-	exchangeOrderType, err := stoporders.ExchangeOrderType(in.ExchangeOrderType)
-	if err != nil {
-		return resolvedStopPlace{}, render.UsageError(err.Error())
+	exchangeOrderType := investapi.ExchangeOrderType_EXCHANGE_ORDER_TYPE_UNSPECIFIED
+	exchangeOrderTypeStr := ""
+	if stopOrderType == investapi.StopOrderType_STOP_ORDER_TYPE_TAKE_PROFIT {
+		exchangeOrderType, err = stoporders.ExchangeOrderType(in.ExchangeOrderType)
+		if err != nil {
+			return resolvedStopPlace{}, render.UsageError(err.Error())
+		}
+		exchangeOrderTypeStr = defaultStr(in.ExchangeOrderType, "market")
+	} else if strings.TrimSpace(in.ExchangeOrderType) != "" {
+		return resolvedStopPlace{}, render.UsageError("--exchange-order-type is only valid with --type take-profit")
 	}
-	takeProfitType, err := stoporders.TakeProfitType(in.TakeProfitType)
-	if err != nil {
-		return resolvedStopPlace{}, render.UsageError(err.Error())
+	takeProfitType := investapi.TakeProfitType_TAKE_PROFIT_TYPE_UNSPECIFIED
+	takeProfitTypeStr := ""
+	if stopOrderType == investapi.StopOrderType_STOP_ORDER_TYPE_TAKE_PROFIT {
+		takeProfitType, err = stoporders.TakeProfitType(in.TakeProfitType)
+		if err != nil {
+			return resolvedStopPlace{}, render.UsageError(err.Error())
+		}
+		takeProfitTypeStr = defaultStr(in.TakeProfitType, "regular")
+	} else if strings.TrimSpace(in.TakeProfitType) != "" {
+		return resolvedStopPlace{}, render.UsageError("--take-profit-type is only valid with --type take-profit")
 	}
 
 	stopPriceStr := strings.TrimSpace(in.StopPrice)
@@ -584,8 +622,8 @@ func buildStopPlace(in stopPlaceInput) (resolvedStopPlace, *render.CLIError) {
 		}
 		orderID = generated
 	}
-	if len(orderID) > 36 {
-		return resolvedStopPlace{}, render.UsageError("order-id must be at most 36 characters")
+	if err := validateOrderID(orderID); err != nil {
+		return resolvedStopPlace{}, render.UsageError(err.Error())
 	}
 
 	return resolvedStopPlace{
@@ -604,9 +642,9 @@ func buildStopPlace(in stopPlaceInput) (resolvedStopPlace, *render.CLIError) {
 		expireDate:           expireDate,
 		expireDateStr:        expireDateStr,
 		exchangeOrderType:    exchangeOrderType,
-		exchangeOrderTypeStr: defaultStr(in.ExchangeOrderType, "market"),
+		exchangeOrderTypeStr: exchangeOrderTypeStr,
 		takeProfitType:       takeProfitType,
-		takeProfitTypeStr:    defaultStr(in.TakeProfitType, "regular"),
+		takeProfitTypeStr:    takeProfitTypeStr,
 		trailing:             trailing,
 		trailingIndentStr:    indentStr,
 		trailingSpreadStr:    spreadStr,
@@ -750,7 +788,8 @@ func (a *app) stopOrdersCancelCmd() *cobra.Command {
 			resp, err := stoporders.New(conn).Cancel(ctx, settings.AccountID, args[0])
 			meta := render.NewMeta(settings.AccountID, info.TrackingID(), time.Since(start))
 			if err != nil {
-				return a.fail(mode, render.Classify(err, callContext(info, true)), meta)
+				cerr := render.Classify(err, callContext(info, true))
+				return a.fail(mode, addCancelReconcileHint(cerr, args[0], "tinvest stop-orders list --status all"), meta)
 			}
 			data := cancelData{OrderID: args[0], Time: render.Timestamp(resp.GetTime())}
 			if mode == "table" {
@@ -763,10 +802,6 @@ func (a *app) stopOrdersCancelCmd() *cobra.Command {
 }
 
 // ---- reconcile ----
-
-type stopReconcileData struct {
-	Outcomes []render.ReconcileOutcomeView `json:"outcomes"`
-}
 
 func (a *app) stopOrdersReconcileCmd() *cobra.Command {
 	return &cobra.Command{
@@ -792,31 +827,32 @@ func (a *app) stopOrdersReconcileCmd() *cobra.Command {
 			}
 			defer func() { _ = led.Close() }()
 
-			outcomes, cerr := reconcileStopFlow(cmd.Context(), stoporders.New(conn), led)
+			outcomes, cerr := reconcileStopFlowForTarget(
+				cmd.Context(), stoporders.New(conn), led,
+				reconcileTarget{Profile: settings.Profile, Endpoint: settings.Endpoint},
+			)
 			meta := render.NewMeta(settings.AccountID, "", time.Since(start))
 			if cerr != nil {
 				return a.fail(mode, cerr, meta)
 			}
 			if mode == "table" {
-				return render.ReconcileTable(os.Stdout, outcomes)
+				return reconcileTable(os.Stdout, outcomes)
 			}
-			return render.WriteJSON(os.Stdout, render.Success(stopReconcileData{Outcomes: outcomes}, meta))
+			return render.WriteJSON(os.Stdout, render.Success(newReconcileData(outcomes, reconcileCommand), meta))
 		},
 	}
 }
 
-// reconcileStopFlow resolves every Unresolved ledger entry of kind
-// kindStopOrderPlace against the broker by listing stop orders and matching
-// on the journaled request shape (plan §9). Unlike GetOrderState for regular
-// orders (ORDER_ID_TYPE_REQUEST), GetStopOrders does not echo the client
-// order_id anywhere in its response — the contract simply carries no such
-// field on StopOrder — so there is no direct client-key lookup. Matching is
-// therefore heuristic: instrument + direction + quantity + stop_price
-// uniquely identify an intent in practice. Zero matches means the order never
-// reached the broker (not-placed); exactly one is a confident match; more
-// than one is reported honestly as ambiguous rather than guessed at, leaving
-// the entry unresolved for a human or a future run.
-func reconcileStopFlow(ctx context.Context, cl stoporders.Client, led *ledger.Ledger) ([]render.ReconcileOutcomeView, *render.CLIError) {
+// reconcileStopFlowForTarget lists all stop-order statuses and matches every
+// available request field, including broker creation time. Sent intents with
+// no exact match remain unresolved because the broker may have accepted and
+// already removed the stop order from retained list history.
+func reconcileStopFlowForTarget(
+	ctx context.Context,
+	cl stoporders.Client,
+	led *ledger.Ledger,
+	target reconcileTarget,
+) ([]render.ReconcileOutcomeView, *render.CLIError) {
 	entries, err := led.Unresolved()
 	if err != nil {
 		return nil, &render.CLIError{Code: render.CodeInternal, Message: fmt.Sprintf("read journal: %v", err)}
@@ -826,10 +862,19 @@ func reconcileStopFlow(ctx context.Context, cl stoporders.Client, led *ledger.Le
 	listByAccount := map[string][]*investapi.StopOrder{}
 
 	for _, e := range entries {
+		out := render.ReconcileOutcomeView{IntentID: e.IntentID(), ClientOrderID: e.OrderID(), AccountID: e.AccountID()}
 		if e.Kind() != kindStopOrderPlace {
+			out.Outcome = "foreign"
+			out.Error = foreignIntentMessage(e.Kind(), reconcileCommand)
+			outcomes = append(outcomes, out)
 			continue
 		}
-		out := render.ReconcileOutcomeView{IntentID: e.IntentID(), ClientOrderID: e.OrderID(), AccountID: e.AccountID()}
+		if outcome, message := reconcileTargetMismatch(e, target); message != "" {
+			out.Outcome = outcome
+			out.Error = message
+			outcomes = append(outcomes, out)
+			continue
+		}
 		if e.AccountID() == "" || e.OrderID() == "" {
 			out.Outcome = "indeterminate"
 			out.Error = "missing account or order id in journal entry"
@@ -841,6 +886,12 @@ func reconcileStopFlow(ctx context.Context, cl stoporders.Client, led *ledger.Le
 		if err := json.Unmarshal(e.Payload(), &payload); err != nil {
 			out.Outcome = "indeterminate"
 			out.Error = fmt.Sprintf("unreadable journal payload: %v", err)
+			outcomes = append(outcomes, out)
+			continue
+		}
+		if err := validateStopMatchPayload(payload); err != nil {
+			out.Outcome = "indeterminate"
+			out.Error = fmt.Sprintf("journal payload cannot support safe stop-order matching: %v", err)
 			outcomes = append(outcomes, out)
 			continue
 		}
@@ -865,8 +916,13 @@ func reconcileStopFlow(ctx context.Context, cl stoporders.Client, led *ledger.Le
 		matches := matchStopOrders(list, payload)
 		switch len(matches) {
 		case 0:
-			out.Outcome = "not-placed"
-			_ = e.Reconciled(ledger.Result{Error: "not-placed"})
+			if e.Stage() == ledger.StageIntentCreated {
+				out.Outcome = "not-placed"
+				_ = e.Reconciled(ledger.Result{Error: "not-placed-before-send"})
+			} else {
+				out.Outcome = "indeterminate"
+				out.Error = "no exact stop-order match was found in status=ALL; the broker may have accepted and then executed, canceled, or expired it; check manually with `tinvest stop-orders list --status all` and retry reconcile later"
+			}
 		case 1:
 			out.Outcome = "placed"
 			out.OrderID = matches[0].GetStopOrderId()
@@ -874,15 +930,21 @@ func reconcileStopFlow(ctx context.Context, cl stoporders.Client, led *ledger.Le
 			_ = e.Reconciled(ledger.Result{StopOrderID: matches[0].GetStopOrderId()})
 		default:
 			out.Outcome = "ambiguous"
-			out.Error = fmt.Sprintf("%d candidate stop orders match this intent; resolve manually with `stop-orders list`", len(matches))
+			out.Error = fmt.Sprintf("%d candidate stop orders match this intent; resolve manually with `tinvest stop-orders list --status all`", len(matches))
 		}
 		outcomes = append(outcomes, out)
 	}
 	return outcomes, nil
 }
 
-// matchStopOrders finds every listed stop order consistent with a journaled
-// placement payload: same instrument, direction, quantity, and stop price.
+const (
+	stopReconcileClockSkew      = 5 * time.Second
+	stopReconcileCreationWindow = 2 * time.Minute
+)
+
+// matchStopOrders finds every listed stop order consistent with all request
+// fields echoed by GetStopOrders, plus a bounded creation window around the
+// journaled intent time.
 func matchStopOrders(list []*investapi.StopOrder, p stopOrderPayload) []*investapi.StopOrder {
 	var out []*investapi.StopOrder
 	for _, s := range list {
@@ -892,15 +954,103 @@ func matchStopOrders(list []*investapi.StopOrder, p stopOrderPayload) []*investa
 		if s.GetDirection().String() != p.Direction {
 			continue
 		}
+		if s.GetOrderType().String() != p.StopOrderType {
+			continue
+		}
 		if s.GetLotsRequested() != p.Quantity {
 			continue
 		}
 		if !moneyEqualsDecimal(s.GetStopPrice(), p.StopPrice) {
 			continue
 		}
+		if !moneyEqualsDecimal(s.GetPrice(), p.Price) {
+			continue
+		}
+		if !stopExpirationMatches(s, p) {
+			continue
+		}
+		if !stopTakeProfitMatches(s, p) {
+			continue
+		}
+		if !stopCreationMatches(s, p.CreatedAt) {
+			continue
+		}
 		out = append(out, s)
 	}
 	return out
+}
+
+func validateStopMatchPayload(p stopOrderPayload) error {
+	if p.InstrumentID == "" || p.Direction == "" || p.StopOrderType == "" || p.Quantity <= 0 ||
+		p.StopPrice == "" || p.ExpirationType == "" || p.CreatedAt == "" {
+		return fmt.Errorf("one or more full-match fields are missing")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, p.CreatedAt); err != nil {
+		return fmt.Errorf("invalid created_at: %w", err)
+	}
+	if p.ExpirationType == investapi.StopOrderExpirationType_STOP_ORDER_EXPIRATION_TYPE_GOOD_TILL_DATE.String() {
+		if _, err := time.Parse(time.RFC3339, p.ExpireDate); err != nil {
+			return fmt.Errorf("invalid expire_date: %w", err)
+		}
+	}
+	if p.StopOrderType == investapi.StopOrderType_STOP_ORDER_TYPE_TAKE_PROFIT.String() {
+		if p.ExchangeOrderType == "" || p.TakeProfitType == "" {
+			return fmt.Errorf("one or more take-profit match fields are missing")
+		}
+	} else if p.ExchangeOrderType != "" || p.TakeProfitType != "" {
+		return fmt.Errorf("take-profit-only match fields are present for another stop type")
+	}
+	if p.TakeProfitType == investapi.TakeProfitType_TAKE_PROFIT_TYPE_TRAILING.String() &&
+		(p.TrailingIndent == "" || p.TrailingIndentType == "" || p.TrailingSpread == "" || p.TrailingSpreadType == "") {
+		return fmt.Errorf("trailing take-profit fields are missing")
+	}
+	return nil
+}
+
+func stopExpirationMatches(stop *investapi.StopOrder, payload stopOrderPayload) bool {
+	switch payload.ExpirationType {
+	case investapi.StopOrderExpirationType_STOP_ORDER_EXPIRATION_TYPE_GOOD_TILL_CANCEL.String():
+		return payload.ExpireDate == "" && stop.GetExpirationTime() == nil
+	case investapi.StopOrderExpirationType_STOP_ORDER_EXPIRATION_TYPE_GOOD_TILL_DATE.String():
+		expected, err := time.Parse(time.RFC3339, payload.ExpireDate)
+		return err == nil && stop.GetExpirationTime() != nil && stop.GetExpirationTime().AsTime().Equal(expected)
+	default:
+		return false
+	}
+}
+
+func stopTakeProfitMatches(stop *investapi.StopOrder, payload stopOrderPayload) bool {
+	if payload.StopOrderType != investapi.StopOrderType_STOP_ORDER_TYPE_TAKE_PROFIT.String() {
+		return payload.ExchangeOrderType == "" && payload.TakeProfitType == "" &&
+			stop.GetExchangeOrderType() == investapi.ExchangeOrderType_EXCHANGE_ORDER_TYPE_UNSPECIFIED &&
+			stop.GetTakeProfitType() == investapi.TakeProfitType_TAKE_PROFIT_TYPE_UNSPECIFIED &&
+			stop.GetTrailingData() == nil
+	}
+	if stop.GetExchangeOrderType().String() != payload.ExchangeOrderType {
+		return false
+	}
+	if stop.GetTakeProfitType().String() != payload.TakeProfitType {
+		return false
+	}
+	if payload.TakeProfitType != investapi.TakeProfitType_TAKE_PROFIT_TYPE_TRAILING.String() {
+		return stop.GetTrailingData() == nil
+	}
+	trailing := stop.GetTrailingData()
+	return trailing != nil &&
+		quotationEqualsDecimal(trailing.GetIndent(), payload.TrailingIndent) &&
+		trailing.GetIndentType().String() == payload.TrailingIndentType &&
+		quotationEqualsDecimal(trailing.GetSpread(), payload.TrailingSpread) &&
+		trailing.GetSpreadType().String() == payload.TrailingSpreadType
+}
+
+func stopCreationMatches(stop *investapi.StopOrder, createdAt string) bool {
+	intentTime, err := time.Parse(time.RFC3339Nano, createdAt)
+	if err != nil || stop.GetCreateDate() == nil {
+		return false
+	}
+	created := stop.GetCreateDate().AsTime()
+	return !created.Before(intentTime.Add(-stopReconcileClockSkew)) &&
+		!created.After(intentTime.Add(stopReconcileCreationWindow))
 }
 
 func moneyEqualsDecimal(m *investapi.MoneyValue, decimal string) bool {
@@ -912,4 +1062,15 @@ func moneyEqualsDecimal(m *investapi.MoneyValue, decimal string) bool {
 		return false
 	}
 	return m.GetUnits() == q.GetUnits() && m.GetNano() == q.GetNano()
+}
+
+func quotationEqualsDecimal(q *investapi.Quotation, decimal string) bool {
+	if decimal == "" {
+		return q == nil
+	}
+	expected, err := render.ParseQuotation(decimal)
+	if err != nil || q == nil {
+		return false
+	}
+	return q.GetUnits() == expected.GetUnits() && q.GetNano() == expected.GetNano()
 }

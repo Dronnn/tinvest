@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +13,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"tinvest/internal/broker/stoporders"
 	"tinvest/internal/ledger"
@@ -36,8 +39,9 @@ type fakeStopOrders struct {
 	postErr         error
 	block           chan struct{}
 
-	listResp []*investapi.StopOrder
-	listErr  error
+	listResp     []*investapi.StopOrder
+	listErr      error
+	listRequests []*investapi.GetStopOrdersRequest
 }
 
 func (f *fakeStopOrders) PostStopOrder(ctx context.Context, req *investapi.PostStopOrderRequest) (*investapi.PostStopOrderResponse, error) {
@@ -65,9 +69,10 @@ func (f *fakeStopOrders) PostStopOrder(ctx context.Context, req *investapi.PostS
 	return resp, nil
 }
 
-func (f *fakeStopOrders) GetStopOrders(_ context.Context, _ *investapi.GetStopOrdersRequest) (*investapi.GetStopOrdersResponse, error) {
+func (f *fakeStopOrders) GetStopOrders(_ context.Context, req *investapi.GetStopOrdersRequest) (*investapi.GetStopOrdersResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.listRequests = append(f.listRequests, req)
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -102,26 +107,27 @@ func newStopOrdersConn(t *testing.T, f *fakeStopOrders) *grpc.ClientConn {
 }
 
 func stopPlaceIntent(orderID string) (ledger.Intent, stoporders.PlaceParams) {
+	createdAt := time.Now().UTC()
 	intent := ledger.Intent{
 		IntentID: orderID, Kind: kindStopOrderPlace, AccountID: "acc-1",
 		Profile: "test", Attempt: 1, OrderID: orderID,
 		Payload: stopOrderPayload{
-			AccountID: "acc-1", InstrumentID: "uid-1", OrderID: orderID,
+			AccountID: "acc-1", Endpoint: testEndpoint, InstrumentID: "uid-1", OrderID: orderID,
 			Direction:      investapi.StopOrderDirection_STOP_ORDER_DIRECTION_BUY.String(),
 			StopOrderType:  investapi.StopOrderType_STOP_ORDER_TYPE_STOP_LOSS.String(),
 			Quantity:       1,
 			StopPrice:      "100",
 			ExpirationType: investapi.StopOrderExpirationType_STOP_ORDER_EXPIRATION_TYPE_GOOD_TILL_CANCEL.String(),
+			CreatedAt:      createdAt.Format(time.RFC3339Nano),
 		},
 	}
 	params := stoporders.PlaceParams{
 		AccountID: "acc-1", InstrumentID: "uid-1", OrderID: orderID,
-		Direction:         investapi.StopOrderDirection_STOP_ORDER_DIRECTION_BUY,
-		StopOrderType:     investapi.StopOrderType_STOP_ORDER_TYPE_STOP_LOSS,
-		Quantity:          1,
-		StopPrice:         &investapi.Quotation{Units: 100},
-		ExpirationType:    investapi.StopOrderExpirationType_STOP_ORDER_EXPIRATION_TYPE_GOOD_TILL_CANCEL,
-		ExchangeOrderType: investapi.ExchangeOrderType_EXCHANGE_ORDER_TYPE_MARKET,
+		Direction:      investapi.StopOrderDirection_STOP_ORDER_DIRECTION_BUY,
+		StopOrderType:  investapi.StopOrderType_STOP_ORDER_TYPE_STOP_LOSS,
+		Quantity:       1,
+		StopPrice:      &investapi.Quotation{Units: 100},
+		ExpirationType: investapi.StopOrderExpirationType_STOP_ORDER_EXPIRATION_TYPE_GOOD_TILL_CANCEL,
 	}
 	return intent, params
 }
@@ -238,13 +244,18 @@ func TestStopPlaceAmbiguousExitSevenThenReconcile(t *testing.T) {
 			StopOrderId:   "stop-exch-9",
 			InstrumentUid: "uid-1",
 			Direction:     investapi.StopOrderDirection_STOP_ORDER_DIRECTION_BUY,
+			OrderType:     investapi.StopOrderType_STOP_ORDER_TYPE_STOP_LOSS,
 			LotsRequested: 1,
 			StopPrice:     &investapi.MoneyValue{Units: 100},
+			CreateDate:    timestamppb.Now(),
 			Status:        investapi.StopOrderStatusOption_STOP_ORDER_STATUS_ACTIVE,
 		},
 	}}
 	recConn := newStopOrdersConn(t, recFake)
-	outcomes, rcerr := reconcileStopFlow(context.Background(), stoporders.New(recConn), led)
+	outcomes, rcerr := reconcileStopFlowForTarget(
+		context.Background(), stoporders.New(recConn), led,
+		reconcileTarget{Profile: "test", Endpoint: testEndpoint},
+	)
 	if rcerr != nil {
 		t.Fatalf("reconcile failed: %+v", rcerr)
 	}
@@ -277,15 +288,20 @@ func TestReconcileStopAmbiguousLeavesUnresolved(t *testing.T) {
 	dup := &investapi.StopOrder{
 		InstrumentUid: "uid-1",
 		Direction:     investapi.StopOrderDirection_STOP_ORDER_DIRECTION_BUY,
+		OrderType:     investapi.StopOrderType_STOP_ORDER_TYPE_STOP_LOSS,
 		LotsRequested: 1,
 		StopPrice:     &investapi.MoneyValue{Units: 100},
+		CreateDate:    timestamppb.Now(),
 	}
 	fake := &fakeStopOrders{listResp: []*investapi.StopOrder{
-		{StopOrderId: "a", InstrumentUid: dup.InstrumentUid, Direction: dup.Direction, LotsRequested: dup.LotsRequested, StopPrice: dup.StopPrice},
-		{StopOrderId: "b", InstrumentUid: dup.InstrumentUid, Direction: dup.Direction, LotsRequested: dup.LotsRequested, StopPrice: dup.StopPrice},
+		{StopOrderId: "a", InstrumentUid: dup.InstrumentUid, Direction: dup.Direction, OrderType: dup.OrderType, LotsRequested: dup.LotsRequested, StopPrice: dup.StopPrice, ExchangeOrderType: dup.ExchangeOrderType, CreateDate: dup.CreateDate},
+		{StopOrderId: "b", InstrumentUid: dup.InstrumentUid, Direction: dup.Direction, OrderType: dup.OrderType, LotsRequested: dup.LotsRequested, StopPrice: dup.StopPrice, ExchangeOrderType: dup.ExchangeOrderType, CreateDate: dup.CreateDate},
 	}}
 	conn := newStopOrdersConn(t, fake)
-	outcomes, cerr := reconcileStopFlow(context.Background(), stoporders.New(conn), led)
+	outcomes, cerr := reconcileStopFlowForTarget(
+		context.Background(), stoporders.New(conn), led,
+		reconcileTarget{Profile: "test", Endpoint: testEndpoint},
+	)
 	if cerr != nil {
 		t.Fatalf("reconcile: %+v", cerr)
 	}
@@ -298,7 +314,7 @@ func TestReconcileStopAmbiguousLeavesUnresolved(t *testing.T) {
 	}
 }
 
-func TestReconcileStopNotFoundMarksNotPlaced(t *testing.T) {
+func TestReconcileStopZeroMatchesAfterSendStaysUnresolved(t *testing.T) {
 	led := testLedger(t)
 	intent, _ := stopPlaceIntent("stop-lost")
 	entry, err := led.Begin(intent)
@@ -311,14 +327,191 @@ func TestReconcileStopNotFoundMarksNotPlaced(t *testing.T) {
 
 	fake := &fakeStopOrders{} // empty list: nothing matches
 	conn := newStopOrdersConn(t, fake)
-	outcomes, cerr := reconcileStopFlow(context.Background(), stoporders.New(conn), led)
+	outcomes, cerr := reconcileStopFlowForTarget(
+		context.Background(), stoporders.New(conn), led,
+		reconcileTarget{Profile: "test", Endpoint: testEndpoint},
+	)
 	if cerr != nil {
 		t.Fatalf("reconcile: %+v", cerr)
 	}
-	if len(outcomes) != 1 || outcomes[0].Outcome != "not-placed" {
-		t.Fatalf("outcomes = %+v, want not-placed", outcomes)
+	if len(outcomes) != 1 || outcomes[0].Outcome != "indeterminate" || !strings.Contains(outcomes[0].Error, "manual") {
+		t.Fatalf("outcomes = %+v, want indeterminate with manual-check hint", outcomes)
 	}
-	if after, _ := led.Unresolved(); len(after) != 0 {
-		t.Errorf("not-placed entry must be reconciled, got %d unresolved", len(after))
+	if after, _ := led.Unresolved(); len(after) != 1 {
+		t.Errorf("zero-match sent intent must remain unresolved, got %d unresolved", len(after))
+	}
+}
+
+func TestStopReconcileSkipsForeignKindsAndMismatchedTargets(t *testing.T) {
+	tests := []struct {
+		name     string
+		kind     string
+		profile  string
+		endpoint string
+		outcome  string
+		want     string
+	}{
+		{name: "foreign kind", kind: kindOrderPlace, profile: "test", endpoint: testEndpoint, outcome: "foreign", want: reconcileCommand},
+		{name: "foreign profile", kind: kindStopOrderPlace, profile: "sandbox", endpoint: testEndpoint, outcome: "profile-mismatch", want: "--profile sandbox"},
+		{name: "foreign endpoint", kind: kindStopOrderPlace, profile: "test", endpoint: "sandbox.example:443", outcome: "profile-mismatch", want: "sandbox.example:443"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			led := testLedger(t)
+			entry, err := led.Begin(ledger.Intent{
+				IntentID: "stop-scope-" + tt.name, Kind: tt.kind, AccountID: "acc-1",
+				Profile: tt.profile, OrderID: testUUID,
+				Payload: map[string]any{"endpoint": tt.endpoint},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := entry.SendStarted(); err != nil {
+				t.Fatal(err)
+			}
+			fake := &fakeStopOrders{}
+			conn := newStopOrdersConn(t, fake)
+			outcomes, cerr := reconcileStopFlowForTarget(
+				context.Background(), stoporders.New(conn), led,
+				reconcileTarget{Profile: "test", Endpoint: testEndpoint},
+			)
+			if cerr != nil {
+				t.Fatalf("reconcile: %+v", cerr)
+			}
+			if len(outcomes) != 1 || outcomes[0].Outcome != tt.outcome || !strings.Contains(outcomes[0].Error, tt.want) {
+				t.Fatalf("scope outcome = %+v", outcomes)
+			}
+			fake.mu.Lock()
+			listCalls := len(fake.listRequests)
+			fake.mu.Unlock()
+			if listCalls != 0 {
+				t.Fatalf("GetStopOrders calls = %d, want 0", listCalls)
+			}
+			if unresolved, _ := led.Unresolved(); len(unresolved) != 1 {
+				t.Fatalf("skipped intent was resolved, unresolved = %d", len(unresolved))
+			}
+		})
+	}
+}
+
+func TestStopReconcileUsesStatusAll(t *testing.T) {
+	led := testLedger(t)
+	intent, _ := stopPlaceIntent(testUUID)
+	entry, err := led.Begin(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := entry.SendStarted(); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeStopOrders{}
+	conn := newStopOrdersConn(t, fake)
+	_, cerr := reconcileStopFlowForTarget(
+		context.Background(), stoporders.New(conn), led,
+		reconcileTarget{Profile: "test", Endpoint: testEndpoint},
+	)
+	if cerr != nil {
+		t.Fatalf("reconcile: %+v", cerr)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.listRequests) != 1 || fake.listRequests[0].GetStatus() != investapi.StopOrderStatusOption_STOP_ORDER_STATUS_ALL {
+		t.Fatalf("GetStopOrders requests = %+v, want one status=ALL", fake.listRequests)
+	}
+}
+
+func TestMatchStopOrdersUsesFullRequestAndCreationWindow(t *testing.T) {
+	created := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
+	payload := stopOrderPayload{
+		InstrumentID:       "uid-1",
+		Direction:          investapi.StopOrderDirection_STOP_ORDER_DIRECTION_BUY.String(),
+		StopOrderType:      investapi.StopOrderType_STOP_ORDER_TYPE_TAKE_PROFIT.String(),
+		Quantity:           1,
+		Price:              "99",
+		StopPrice:          "100",
+		ExpirationType:     investapi.StopOrderExpirationType_STOP_ORDER_EXPIRATION_TYPE_GOOD_TILL_DATE.String(),
+		ExpireDate:         created.Add(time.Hour).Format(time.RFC3339),
+		ExchangeOrderType:  investapi.ExchangeOrderType_EXCHANGE_ORDER_TYPE_LIMIT.String(),
+		TakeProfitType:     investapi.TakeProfitType_TAKE_PROFIT_TYPE_TRAILING.String(),
+		TrailingIndent:     "1",
+		TrailingIndentType: investapi.TrailingValueType_TRAILING_VALUE_ABSOLUTE.String(),
+		TrailingSpread:     "0.5",
+		TrailingSpreadType: investapi.TrailingValueType_TRAILING_VALUE_RELATIVE.String(),
+		CreatedAt:          created.Format(time.RFC3339Nano),
+	}
+	exact := &investapi.StopOrder{
+		StopOrderId: "exact", InstrumentUid: "uid-1",
+		Direction:         investapi.StopOrderDirection_STOP_ORDER_DIRECTION_BUY,
+		OrderType:         investapi.StopOrderType_STOP_ORDER_TYPE_TAKE_PROFIT,
+		LotsRequested:     1,
+		Price:             &investapi.MoneyValue{Units: 99},
+		StopPrice:         &investapi.MoneyValue{Units: 100},
+		CreateDate:        timestamppb.New(created.Add(10 * time.Second)),
+		ExpirationTime:    timestamppb.New(created.Add(time.Hour)),
+		ExchangeOrderType: investapi.ExchangeOrderType_EXCHANGE_ORDER_TYPE_LIMIT,
+		TakeProfitType:    investapi.TakeProfitType_TAKE_PROFIT_TYPE_TRAILING,
+		TrailingData: &investapi.StopOrder_TrailingData{
+			Indent:     &investapi.Quotation{Units: 1},
+			IndentType: investapi.TrailingValueType_TRAILING_VALUE_ABSOLUTE,
+			Spread:     &investapi.Quotation{Nano: 500_000_000},
+			SpreadType: investapi.TrailingValueType_TRAILING_VALUE_RELATIVE,
+		},
+	}
+	wrongType := proto.Clone(exact).(*investapi.StopOrder)
+	wrongType.StopOrderId = "wrong-type"
+	wrongType.OrderType = investapi.StopOrderType_STOP_ORDER_TYPE_STOP_LOSS
+	tooOld := proto.Clone(exact).(*investapi.StopOrder)
+	tooOld.StopOrderId = "too-old"
+	tooOld.CreateDate = timestamppb.New(created.Add(-10 * time.Minute))
+	wrongTrailing := proto.Clone(exact).(*investapi.StopOrder)
+	wrongTrailing.StopOrderId = "wrong-trailing"
+	wrongTrailing.TrailingData = &investapi.StopOrder_TrailingData{
+		Indent:     &investapi.Quotation{Units: 2},
+		IndentType: investapi.TrailingValueType_TRAILING_VALUE_ABSOLUTE,
+		Spread:     &investapi.Quotation{Nano: 500_000_000},
+		SpreadType: investapi.TrailingValueType_TRAILING_VALUE_RELATIVE,
+	}
+
+	matches := matchStopOrders([]*investapi.StopOrder{wrongType, tooOld, wrongTrailing, exact}, payload)
+	if len(matches) != 1 || matches[0].GetStopOrderId() != "exact" {
+		t.Fatalf("matches = %+v, want only exact", matches)
+	}
+}
+
+func TestTakeProfitPayloadUsesBrokerEnumStringsAndCanMatch(t *testing.T) {
+	created := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
+	rp, cerr := buildStopPlace(stopPlaceInput{
+		Instrument: testUUID, Direction: "buy", Quantity: 1, Type: "take-profit",
+		StopPrice: "100", ExchangeOrderType: "limit", TakeProfitType: "trailing",
+		TrailingIndent: "1", TrailingIndentType: "absolute",
+		TrailingSpread: "0.5", TrailingSpreadType: "relative", OrderID: testUUID,
+	})
+	if cerr != nil {
+		t.Fatalf("buildStopPlace: %+v", cerr)
+	}
+	payload := stopOrderPayloadFrom("acc-1", testEndpoint, "uid-1", created, rp)
+	if payload.ExchangeOrderType != investapi.ExchangeOrderType_EXCHANGE_ORDER_TYPE_LIMIT.String() ||
+		payload.TakeProfitType != investapi.TakeProfitType_TAKE_PROFIT_TYPE_TRAILING.String() ||
+		payload.TrailingIndentType != investapi.TrailingValueType_TRAILING_VALUE_ABSOLUTE.String() ||
+		payload.TrailingSpreadType != investapi.TrailingValueType_TRAILING_VALUE_RELATIVE.String() {
+		t.Fatalf("payload enum strings = %+v", payload)
+	}
+
+	stop := &investapi.StopOrder{
+		StopOrderId: "exact", InstrumentUid: "uid-1", LotsRequested: 1,
+		Direction:         investapi.StopOrderDirection_STOP_ORDER_DIRECTION_BUY,
+		OrderType:         investapi.StopOrderType_STOP_ORDER_TYPE_TAKE_PROFIT,
+		StopPrice:         &investapi.MoneyValue{Units: 100},
+		CreateDate:        timestamppb.New(created.Add(time.Second)),
+		ExchangeOrderType: investapi.ExchangeOrderType_EXCHANGE_ORDER_TYPE_LIMIT,
+		TakeProfitType:    investapi.TakeProfitType_TAKE_PROFIT_TYPE_TRAILING,
+		TrailingData: &investapi.StopOrder_TrailingData{
+			Indent: &investapi.Quotation{Units: 1}, IndentType: investapi.TrailingValueType_TRAILING_VALUE_ABSOLUTE,
+			Spread: &investapi.Quotation{Nano: 500_000_000}, SpreadType: investapi.TrailingValueType_TRAILING_VALUE_RELATIVE,
+		},
+	}
+	matches := matchStopOrders([]*investapi.StopOrder{stop}, payload)
+	if len(matches) != 1 || matches[0].GetStopOrderId() != "exact" {
+		t.Fatalf("matches = %+v, want generated payload to match", matches)
 	}
 }

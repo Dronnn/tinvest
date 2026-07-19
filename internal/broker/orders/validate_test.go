@@ -23,11 +23,14 @@ func TestValidateBasics(t *testing.T) {
 	if err := ValidateBasics(limit, 1, nil); err == nil {
 		t.Error("limit without price must fail")
 	}
-	if err := ValidateBasics(limit, 1, q(0, 0)); err == nil {
-		t.Error("limit with zero price must fail")
+	if err := ValidateBasics(limit, 1, q(0, 0)); err != nil {
+		t.Errorf("zero limit price must pass format/scale validation: %v", err)
 	}
 	if err := ValidateBasics(limit, 1, q(100, 0)); err != nil {
 		t.Errorf("valid limit: %v", err)
+	}
+	if err := ValidateBasics(limit, 1, q(-10, 0)); err != nil {
+		t.Errorf("negative futures limit price must be valid: %v", err)
 	}
 	if err := ValidateBasics(market, 1, q(100, 0)); err == nil {
 		t.Error("market with price must fail")

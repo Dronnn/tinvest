@@ -68,12 +68,6 @@ func ValidateBasics(orderType investapi.OrderType, lots int64, price *investapi.
 		if price == nil {
 			return fmt.Errorf("limit orders require a --price")
 		}
-		if price.GetUnits() < 0 || price.GetNano() < 0 {
-			return fmt.Errorf("price must not be negative")
-		}
-		if price.GetUnits() == 0 && price.GetNano() == 0 {
-			return fmt.Errorf("limit orders require a non-zero --price")
-		}
 	case investapi.OrderType_ORDER_TYPE_MARKET, investapi.OrderType_ORDER_TYPE_BESTPRICE:
 		if price != nil {
 			return fmt.Errorf("--price is not allowed for %s orders", typeName(orderType))

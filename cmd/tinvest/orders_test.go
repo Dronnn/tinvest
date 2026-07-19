@@ -44,11 +44,17 @@ type fakeOrders struct {
 	stateResp      *investapi.OrderState            // fallback for any lookup
 	stateErr       error
 	stateCalls     int
+	stateReplies   []orderStateReply
 
 	openOrders []*investapi.OrderState
 
 	previewResp *investapi.GetOrderPriceResponse
 	maxLotsResp *investapi.GetMaxLotsResponse
+}
+
+type orderStateReply struct {
+	state *investapi.OrderState
+	err   error
 }
 
 func (f *fakeOrders) PostOrder(ctx context.Context, req *investapi.PostOrderRequest) (*investapi.PostOrderResponse, error) {
@@ -86,6 +92,11 @@ func (f *fakeOrders) GetOrderState(_ context.Context, req *investapi.GetOrderSta
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stateCalls++
+	if len(f.stateReplies) > 0 {
+		reply := f.stateReplies[0]
+		f.stateReplies = f.stateReplies[1:]
+		return reply.state, reply.err
+	}
 	if f.stateErr != nil {
 		return nil, f.stateErr
 	}
@@ -96,6 +107,209 @@ func (f *fakeOrders) GetOrderState(_ context.Context, req *investapi.GetOrderSta
 		return f.stateResp, nil
 	}
 	return nil, status.Error(codes.NotFound, "70001")
+}
+
+func TestOrdersReconcileSkipsForeignKindsAndReportsThem(t *testing.T) {
+	led := testLedger(t)
+	entry, err := led.Begin(ledger.Intent{
+		IntentID: "foreign-stop", Kind: kindStopOrderPlace, AccountID: "acc-1",
+		Profile: "test", OrderID: testUUID,
+		Payload: map[string]any{"endpoint": testEndpoint},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := entry.SendStarted(); err != nil {
+		t.Fatal(err)
+	}
+
+	fake := &fakeOrders{}
+	conn := newOrdersConn(t, fake)
+	outcomes, cerr := reconcileFlowForTarget(
+		context.Background(), orders.New(conn), led,
+		reconcileTarget{Profile: "test", Endpoint: testEndpoint},
+		reconcileOptions{AsyncNotFoundDelay: 0},
+	)
+	if cerr != nil {
+		t.Fatalf("reconcile: %+v", cerr)
+	}
+	if len(outcomes) != 1 || outcomes[0].Outcome != "foreign" || !strings.Contains(outcomes[0].Error, stopReconcileCommand) {
+		t.Fatalf("foreign outcome = %+v", outcomes)
+	}
+	fake.mu.Lock()
+	stateCalls := fake.stateCalls
+	fake.mu.Unlock()
+	if stateCalls != 0 {
+		t.Fatalf("GetOrderState calls = %d, want 0 for foreign intent", stateCalls)
+	}
+	if unresolved, _ := led.Unresolved(); len(unresolved) != 1 {
+		t.Fatalf("foreign intent was resolved, unresolved = %d", len(unresolved))
+	}
+	data := newReconcileData(outcomes, stopReconcileCommand)
+	if data.ForeignIntentCount != 1 || data.ForeignIntentHint != stopReconcileCommand {
+		t.Fatalf("foreign summary = %+v", data)
+	}
+}
+
+func TestOrdersReconcileSkipsMismatchedProfileAndEndpoint(t *testing.T) {
+	tests := []struct {
+		name           string
+		profile        string
+		endpoint       string
+		activeProfile  string
+		activeEndpoint string
+		want           string
+	}{
+		{
+			name: "profile", profile: "sandbox", endpoint: "sandbox.example:443",
+			activeProfile: "prod", activeEndpoint: "prod.example:443", want: "--profile sandbox",
+		},
+		{
+			name: "endpoint", profile: "main", endpoint: "sandbox.example:443",
+			activeProfile: "main", activeEndpoint: "prod.example:443", want: "sandbox.example:443",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			led := testLedger(t)
+			entry, err := led.Begin(ledger.Intent{
+				IntentID: "mismatch-" + tt.name, Kind: kindOrderPlace, AccountID: "acc-1",
+				Profile: tt.profile, OrderID: testUUID,
+				Payload: map[string]any{"endpoint": tt.endpoint, "async": false},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := entry.SendStarted(); err != nil {
+				t.Fatal(err)
+			}
+			fake := &fakeOrders{}
+			conn := newOrdersConn(t, fake)
+			outcomes, cerr := reconcileFlowForTarget(
+				context.Background(), orders.New(conn), led,
+				reconcileTarget{Profile: tt.activeProfile, Endpoint: tt.activeEndpoint},
+				reconcileOptions{AsyncNotFoundDelay: 0},
+			)
+			if cerr != nil {
+				t.Fatalf("reconcile: %+v", cerr)
+			}
+			if len(outcomes) != 1 || outcomes[0].Outcome != "profile-mismatch" || !strings.Contains(outcomes[0].Error, tt.want) {
+				t.Fatalf("mismatch outcome = %+v", outcomes)
+			}
+			fake.mu.Lock()
+			stateCalls := fake.stateCalls
+			fake.mu.Unlock()
+			if stateCalls != 0 {
+				t.Fatalf("GetOrderState calls = %d, want 0", stateCalls)
+			}
+			if unresolved, _ := led.Unresolved(); len(unresolved) != 1 {
+				t.Fatalf("mismatched intent was resolved, unresolved = %d", len(unresolved))
+			}
+		})
+	}
+}
+
+func TestOrdersReconcileLeavesLegacyEndpointlessIntentIndeterminate(t *testing.T) {
+	led := testLedger(t)
+	entry, err := led.Begin(ledger.Intent{
+		IntentID: "legacy", Kind: kindOrderPlace, AccountID: "acc-1",
+		Profile: "test", OrderID: testUUID, Payload: map[string]any{"async": false},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := entry.SendStarted(); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeOrders{}
+	conn := newOrdersConn(t, fake)
+	outcomes, cerr := reconcileFlowForTarget(
+		context.Background(), orders.New(conn), led,
+		reconcileTarget{Profile: "test", Endpoint: testEndpoint},
+		reconcileOptions{AsyncNotFoundDelay: 0},
+	)
+	if cerr != nil {
+		t.Fatalf("reconcile: %+v", cerr)
+	}
+	if len(outcomes) != 1 || outcomes[0].Outcome != "indeterminate" || !strings.Contains(outcomes[0].Error, "endpoint") {
+		t.Fatalf("legacy outcome = %+v", outcomes)
+	}
+	if unresolved, _ := led.Unresolved(); len(unresolved) != 1 {
+		t.Fatalf("legacy intent was resolved, unresolved = %d", len(unresolved))
+	}
+}
+
+func TestAsyncReconcileConfirmsNotFoundBeforeClosing(t *testing.T) {
+	tests := []struct {
+		name           string
+		replies        []orderStateReply
+		wantOutcome    string
+		wantUnresolved int
+	}{
+		{
+			name: "appears on delayed recheck",
+			replies: []orderStateReply{
+				{err: status.Error(codes.NotFound, "not propagated")},
+				{state: &investapi.OrderState{OrderId: "exchange-1", ExecutionReportStatus: investapi.OrderExecutionReportStatus_EXECUTION_REPORT_STATUS_NEW}},
+			},
+			wantOutcome: "placed", wantUnresolved: 0,
+		},
+		{
+			name: "two not found responses",
+			replies: []orderStateReply{
+				{err: status.Error(codes.NotFound, "first")},
+				{err: status.Error(codes.NotFound, "second")},
+			},
+			wantOutcome: "not-placed", wantUnresolved: 0,
+		},
+		{
+			name: "single not found then inconclusive error",
+			replies: []orderStateReply{
+				{err: status.Error(codes.NotFound, "first")},
+				{err: status.Error(codes.PermissionDenied, "cannot confirm")},
+			},
+			wantOutcome: "indeterminate", wantUnresolved: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			led := testLedger(t)
+			entry, err := led.Begin(ledger.Intent{
+				IntentID: "async-" + tt.name, Kind: kindOrderPlace, AccountID: "acc-1",
+				Profile: "test", OrderID: testUUID,
+				Payload: map[string]any{"endpoint": testEndpoint, "async": true},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := entry.SendStarted(); err != nil {
+				t.Fatal(err)
+			}
+			fake := &fakeOrders{stateReplies: append([]orderStateReply(nil), tt.replies...)}
+			conn := newOrdersConn(t, fake)
+			outcomes, cerr := reconcileFlowForTarget(
+				context.Background(), orders.New(conn), led,
+				reconcileTarget{Profile: "test", Endpoint: testEndpoint},
+				reconcileOptions{AsyncNotFoundDelay: 0},
+			)
+			if cerr != nil {
+				t.Fatalf("reconcile: %+v", cerr)
+			}
+			if len(outcomes) != 1 || outcomes[0].Outcome != tt.wantOutcome {
+				t.Fatalf("outcomes = %+v, want %s", outcomes, tt.wantOutcome)
+			}
+			fake.mu.Lock()
+			stateCalls := fake.stateCalls
+			fake.mu.Unlock()
+			if stateCalls != 2 {
+				t.Fatalf("GetOrderState calls = %d, want 2", stateCalls)
+			}
+			if unresolved, _ := led.Unresolved(); len(unresolved) != tt.wantUnresolved {
+				t.Fatalf("unresolved = %d, want %d", len(unresolved), tt.wantUnresolved)
+			}
+		})
+	}
 }
 
 func (f *fakeOrders) GetOrders(_ context.Context, _ *investapi.GetOrdersRequest) (*investapi.GetOrdersResponse, error) {
@@ -152,7 +366,7 @@ func placeIntent(orderID string) (ledger.Intent, orders.PlaceParams) {
 	intent := ledger.Intent{
 		IntentID: orderID, Kind: kindOrderPlace, AccountID: "acc-1",
 		Profile: "test", Attempt: 1, OrderID: orderID,
-		Payload: orderPayload{AccountID: "acc-1", InstrumentID: "uid-1", OrderID: orderID, Lots: 1},
+		Payload: orderPayload{AccountID: "acc-1", Endpoint: testEndpoint, InstrumentID: "uid-1", OrderID: orderID, Lots: 1},
 	}
 	params := orders.PlaceParams{
 		AccountID: "acc-1", InstrumentID: "uid-1", OrderID: orderID,
@@ -270,7 +484,11 @@ func TestPlaceAmbiguousExitSevenThenReconcile(t *testing.T) {
 		},
 	}}
 	recConn := newOrdersConn(t, recFake)
-	outcomes, rcerr := reconcileFlow(context.Background(), orders.New(recConn), led)
+	outcomes, rcerr := reconcileFlowForTarget(
+		context.Background(), orders.New(recConn), led,
+		reconcileTarget{Profile: "test", Endpoint: testEndpoint},
+		reconcileOptions{AsyncNotFoundDelay: 0},
+	)
 	if rcerr != nil {
 		t.Fatalf("reconcile failed: %+v", rcerr)
 	}
@@ -301,7 +519,11 @@ func TestReconcileNotFoundMarksNotPlaced(t *testing.T) {
 
 	fake := &fakeOrders{stateErr: status.Error(codes.NotFound, "70001")}
 	conn := newOrdersConn(t, fake)
-	outcomes, cerr := reconcileFlow(context.Background(), orders.New(conn), led)
+	outcomes, cerr := reconcileFlowForTarget(
+		context.Background(), orders.New(conn), led,
+		reconcileTarget{Profile: "test", Endpoint: testEndpoint},
+		reconcileOptions{AsyncNotFoundDelay: 0},
+	)
 	if cerr != nil {
 		t.Fatalf("reconcile: %+v", cerr)
 	}
@@ -424,7 +646,7 @@ func TestPlaceInputRoundTrip(t *testing.T) {
 		"type": "limit",
 		"price": "250.5",
 		"tif": "day",
-		"order_id": "my-key-1"
+		"order_id": "00000000-0000-4000-8000-000000000003"
 	}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +654,7 @@ func TestPlaceInputRoundTrip(t *testing.T) {
 	if cerr != nil {
 		t.Fatalf("resolvePlaceInput: %+v", cerr)
 	}
-	if rp.lots != 3 || rp.orderID != "my-key-1" {
+	if rp.lots != 3 || rp.orderID != "00000000-0000-4000-8000-000000000003" {
 		t.Errorf("parsed = %+v", rp)
 	}
 	if rp.direction != investapi.OrderDirection_ORDER_DIRECTION_BUY {

@@ -80,10 +80,11 @@ const rateLimitResetTrailer = "x-ratelimit-reset"
 // metadata interceptors (transport.Config.Retry's contract) so every retried
 // attempt still carries full outgoing metadata, and before/alongside the
 // transport's phase-tracking stats.Handler, which observes every attempt on
-// the wire independently and is therefore unaffected by how many attempts a
-// logical call takes (see internal/transport/phase.go: CallInfo is keyed off
-// the call's context, shared by every attempt, and only ever advances
-// forward — not_sent -> sent_unconfirmed -> confirmed).
+// the wire independently (see internal/transport/phase.go: CallInfo is keyed off
+// the call's context, shared by every attempt). Its confirmed flag is reset at
+// each attempt's stats.Begin so the classification reflects the FINAL attempt's
+// outcome, while sent stays a high-water mark, so an earlier attempt that
+// confirmed cannot mask a final attempt that ended sent_unconfirmed (F1).
 func NewUnaryClientInterceptor(policy RetryPolicy) grpc.UnaryClientInterceptor {
 	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 		if policy.MaxAttempts == 0 || !retryEligible(ctx, method) {

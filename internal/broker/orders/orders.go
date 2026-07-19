@@ -30,14 +30,15 @@ func New(cc grpc.ClientConnInterface) Client {
 // (plan §9), which MUST have been persisted to the intent ledger before Place
 // is called.
 type PlaceParams struct {
-	AccountID    string
-	InstrumentID string
-	OrderID      string
-	Direction    investapi.OrderDirection
-	OrderType    investapi.OrderType
-	Lots         int64
-	Price        *investapi.Quotation // nil for market/bestprice
-	TimeInForce  investapi.TimeInForceType
+	AccountID          string
+	InstrumentID       string
+	OrderID            string
+	Direction          investapi.OrderDirection
+	OrderType          investapi.OrderType
+	Lots               int64
+	Price              *investapi.Quotation // nil for market/bestprice
+	TimeInForce        investapi.TimeInForceType
+	ConfirmMarginTrade bool
 }
 
 // Place posts a synchronous order (PostOrder). The caller is responsible for
@@ -45,14 +46,15 @@ type PlaceParams struct {
 // retry server-side — and for the surrounding ledger stages.
 func (c Client) Place(ctx context.Context, p PlaceParams) (*investapi.PostOrderResponse, error) {
 	return c.api.PostOrder(ctx, &investapi.PostOrderRequest{
-		AccountId:    p.AccountID,
-		InstrumentId: p.InstrumentID,
-		OrderId:      p.OrderID,
-		Direction:    p.Direction,
-		OrderType:    p.OrderType,
-		Quantity:     p.Lots,
-		Price:        p.Price,
-		TimeInForce:  p.TimeInForce,
+		AccountId:          p.AccountID,
+		InstrumentId:       p.InstrumentID,
+		OrderId:            p.OrderID,
+		Direction:          p.Direction,
+		OrderType:          p.OrderType,
+		Quantity:           p.Lots,
+		Price:              p.Price,
+		TimeInForce:        p.TimeInForce,
+		ConfirmMarginTrade: p.ConfirmMarginTrade,
 	})
 }
 
@@ -61,13 +63,14 @@ func (c Client) Place(ctx context.Context, p PlaceParams) (*investapi.PostOrderR
 // state, for high-rate flows.
 func (c Client) PlaceAsync(ctx context.Context, p PlaceParams) (*investapi.PostOrderAsyncResponse, error) {
 	req := &investapi.PostOrderAsyncRequest{
-		AccountId:    p.AccountID,
-		InstrumentId: p.InstrumentID,
-		OrderId:      p.OrderID,
-		Direction:    p.Direction,
-		OrderType:    p.OrderType,
-		Quantity:     p.Lots,
-		Price:        p.Price,
+		AccountId:          p.AccountID,
+		InstrumentId:       p.InstrumentID,
+		OrderId:            p.OrderID,
+		Direction:          p.Direction,
+		OrderType:          p.OrderType,
+		Quantity:           p.Lots,
+		Price:              p.Price,
+		ConfirmMarginTrade: p.ConfirmMarginTrade,
 	}
 	if p.TimeInForce != investapi.TimeInForceType_TIME_IN_FORCE_UNSPECIFIED {
 		tif := p.TimeInForce
@@ -107,11 +110,12 @@ func (c Client) Cancel(ctx context.Context, accountID, orderID string) (*investa
 // ReplaceParams describes an order replacement (ReplaceOrder). IdempotencyKey is
 // a fresh client key that overwrites the original order's key.
 type ReplaceParams struct {
-	AccountID      string
-	OrderID        string // exchange order id being replaced
-	IdempotencyKey string
-	Lots           int64
-	Price          *investapi.Quotation
+	AccountID          string
+	OrderID            string // exchange order id being replaced
+	IdempotencyKey     string
+	Lots               int64
+	Price              *investapi.Quotation
+	ConfirmMarginTrade bool
 }
 
 // Replace cancels and re-creates an order atomically (ReplaceOrder). It carries
@@ -119,11 +123,12 @@ type ReplaceParams struct {
 // same as PostOrder.
 func (c Client) Replace(ctx context.Context, p ReplaceParams) (*investapi.PostOrderResponse, error) {
 	return c.api.ReplaceOrder(ctx, &investapi.ReplaceOrderRequest{
-		AccountId:      p.AccountID,
-		OrderId:        p.OrderID,
-		IdempotencyKey: p.IdempotencyKey,
-		Quantity:       p.Lots,
-		Price:          p.Price,
+		AccountId:          p.AccountID,
+		OrderId:            p.OrderID,
+		IdempotencyKey:     p.IdempotencyKey,
+		Quantity:           p.Lots,
+		Price:              p.Price,
+		ConfirmMarginTrade: p.ConfirmMarginTrade,
 	})
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,15 +49,17 @@ type placeData struct {
 
 // orderPayload is the token-free request document journaled at Begin (plan §10).
 type orderPayload struct {
-	AccountID    string `json:"account_id"`
-	InstrumentID string `json:"instrument_id"`
-	OrderID      string `json:"order_id"`
-	Direction    string `json:"direction"`
-	OrderType    string `json:"order_type"`
-	Lots         int64  `json:"lots"`
-	Price        string `json:"price,omitempty"`
-	TimeInForce  string `json:"time_in_force,omitempty"`
-	Async        bool   `json:"async,omitempty"`
+	AccountID          string `json:"account_id"`
+	Endpoint           string `json:"endpoint"`
+	InstrumentID       string `json:"instrument_id"`
+	OrderID            string `json:"order_id"`
+	Direction          string `json:"direction"`
+	OrderType          string `json:"order_type"`
+	Lots               int64  `json:"lots"`
+	Price              string `json:"price,omitempty"`
+	TimeInForce        string `json:"time_in_force,omitempty"`
+	Async              bool   `json:"async,omitempty"`
+	ConfirmMarginTrade bool   `json:"confirm_margin_trade,omitempty"`
 }
 
 func (a *app) ordersCmd() *cobra.Command {
@@ -81,18 +84,19 @@ func (a *app) ordersCmd() *cobra.Command {
 // placeFlags is the flag surface of `orders place`, mirrored by placeInput for
 // --input (see that type's doc comment for the JSON schema).
 type placeFlags struct {
-	instrument string
-	direction  string
-	quantity   int64
-	orderType  string
-	price      string
-	tif        string
-	orderID    string
-	async      bool
-	dryRun     bool
-	yes        bool
-	input      string
-	noCache    bool
+	instrument         string
+	direction          string
+	quantity           int64
+	orderType          string
+	price              string
+	tif                string
+	orderID            string
+	async              bool
+	confirmMarginTrade bool
+	dryRun             bool
+	yes                bool
+	input              string
+	noCache            bool
 }
 
 func (a *app) ordersPlaceCmd() *cobra.Command {
@@ -114,6 +118,7 @@ func (a *app) ordersPlaceCmd() *cobra.Command {
 	fl.StringVar(&f.tif, "tif", "", "time in force: day, ioc, or fok")
 	fl.StringVar(&f.orderID, "order-id", "", "client idempotency key (UUID); generated if omitted")
 	fl.BoolVar(&f.async, "async", false, "place asynchronously (PostOrderAsync)")
+	fl.BoolVar(&f.confirmMarginTrade, "confirm-margin-trade", false, "confirm an order that may create an uncovered position")
 	fl.BoolVar(&f.dryRun, "dry-run", false, "validate and preview only; place nothing")
 	fl.BoolVar(&f.yes, "yes", false, "confirm the mutation (accepted for symmetry; no interactive prompt)")
 	fl.StringVar(&f.input, "input", "", "read the full request as JSON from a file or - for stdin")
@@ -124,17 +129,18 @@ func (a *app) ordersPlaceCmd() *cobra.Command {
 // resolvedPlace is a place request after flag/JSON parsing and enum resolution,
 // before any network call. Price is nil for market/bestprice.
 type resolvedPlace struct {
-	instrument string
-	direction  investapi.OrderDirection
-	orderType  investapi.OrderType
-	lots       int64
-	price      *investapi.Quotation
-	priceStr   string
-	tif        investapi.TimeInForceType
-	tifStr     string
-	orderID    string
-	async      bool
-	dryRun     bool
+	instrument         string
+	direction          investapi.OrderDirection
+	orderType          investapi.OrderType
+	lots               int64
+	price              *investapi.Quotation
+	priceStr           string
+	tif                investapi.TimeInForceType
+	tifStr             string
+	orderID            string
+	async              bool
+	confirmMarginTrade bool
+	dryRun             bool
 }
 
 // runPlace executes the safe-placement vertical slice (plan §9), in the exact
@@ -179,7 +185,7 @@ func (a *app) runPlace(cmd *cobra.Command, f *placeFlags) error {
 		Direction: rp.direction,
 		OrderType: rp.orderType,
 		Lots:      rp.lots,
-		Price:     rp.price,
+		Price:     absolutePolicyPrice(rp.price),
 		RawID:     rp.instrument,
 	}
 	if v := pol.CheckLocal(localIntent); v != nil {
@@ -247,26 +253,29 @@ func (a *app) runPlace(cmd *cobra.Command, f *placeFlags) error {
 		Attempt:   1,
 		OrderID:   rp.orderID,
 		Payload: orderPayload{
-			AccountID:    settings.AccountID,
-			InstrumentID: uid,
-			OrderID:      rp.orderID,
-			Direction:    rp.direction.String(),
-			OrderType:    rp.orderType.String(),
-			Lots:         rp.lots,
-			Price:        rp.priceStr,
-			TimeInForce:  rp.tifStr,
-			Async:        rp.async,
+			AccountID:          settings.AccountID,
+			Endpoint:           settings.Endpoint,
+			InstrumentID:       uid,
+			OrderID:            rp.orderID,
+			Direction:          rp.direction.String(),
+			OrderType:          rp.orderType.String(),
+			Lots:               rp.lots,
+			Price:              rp.priceStr,
+			TimeInForce:        rp.tifStr,
+			Async:              rp.async,
+			ConfirmMarginTrade: rp.confirmMarginTrade,
 		},
 	}
 	params := orders.PlaceParams{
-		AccountID:    settings.AccountID,
-		InstrumentID: uid,
-		OrderID:      rp.orderID,
-		Direction:    rp.direction,
-		OrderType:    rp.orderType,
-		Lots:         rp.lots,
-		Price:        rp.price,
-		TimeInForce:  rp.tif,
+		AccountID:          settings.AccountID,
+		InstrumentID:       uid,
+		OrderID:            rp.orderID,
+		Direction:          rp.direction,
+		OrderType:          rp.orderType,
+		Lots:               rp.lots,
+		Price:              rp.price,
+		TimeInForce:        rp.tif,
+		ConfirmMarginTrade: rp.confirmMarginTrade,
 	}
 
 	out, cerr := placeExec(cmd.Context(), cl, led, intent, params, rp.async)
@@ -420,7 +429,7 @@ func (a *app) runDryRun(cmdCtx context.Context, cl orders.Client, settings confi
 func resolvePlaceRequest(cmd *cobra.Command, f *placeFlags) (resolvedPlace, *render.CLIError) {
 	fl := cmd.Flags()
 	if f.input != "" {
-		for _, name := range []string{"instrument", "direction", "quantity", "type", "price", "tif", "order-id", "async"} {
+		for _, name := range []string{"instrument", "direction", "quantity", "type", "price", "tif", "order-id", "async", "confirm-margin-trade"} {
 			if fl.Changed(name) {
 				return resolvedPlace{}, render.UsageError("--input is mutually exclusive with order flags (e.g. --" + name + ")")
 			}
@@ -428,15 +437,16 @@ func resolvePlaceRequest(cmd *cobra.Command, f *placeFlags) (resolvedPlace, *ren
 		return resolvePlaceInput(f.input)
 	}
 	return buildPlace(placeInput{
-		Instrument: f.instrument,
-		Direction:  f.direction,
-		Quantity:   f.quantity,
-		Type:       f.orderType,
-		Price:      f.price,
-		TIF:        f.tif,
-		OrderID:    f.orderID,
-		Async:      f.async,
-		DryRun:     f.dryRun,
+		Instrument:         f.instrument,
+		Direction:          f.direction,
+		Quantity:           f.quantity,
+		Type:               f.orderType,
+		Price:              f.price,
+		TIF:                f.tif,
+		OrderID:            f.orderID,
+		Async:              f.async,
+		ConfirmMarginTrade: f.confirmMarginTrade,
+		DryRun:             f.dryRun,
 	})
 }
 
@@ -451,23 +461,25 @@ func resolvePlaceRequest(cmd *cobra.Command, f *placeFlags) (resolvedPlace, *ren
 //	  "type":       "limit" | "market" | "bestprice",    // required
 //	  "price":      "<decimal string>",                  // required for limit
 //	  "tif":        "day" | "ioc" | "fok",               // optional
-//	  "order_id":   "<uuid, <=36 chars>",                // optional; generated
+//	  "order_id":   "<uuid>",                            // optional; generated
 //	  "async":      <bool>,                              // optional
+//	  "confirm_margin_trade": <bool>,                     // optional
 //	  "dry_run":    <bool>                               // optional
 //	}
 //
 // Unknown fields are rejected so a misspelled key fails loudly rather than
 // silently dropping a safety-relevant value.
 type placeInput struct {
-	Instrument string `json:"instrument"`
-	Direction  string `json:"direction"`
-	Quantity   int64  `json:"quantity"`
-	Type       string `json:"type"`
-	Price      string `json:"price,omitempty"`
-	TIF        string `json:"tif,omitempty"`
-	OrderID    string `json:"order_id,omitempty"`
-	Async      bool   `json:"async,omitempty"`
-	DryRun     bool   `json:"dry_run,omitempty"`
+	Instrument         string `json:"instrument"`
+	Direction          string `json:"direction"`
+	Quantity           int64  `json:"quantity"`
+	Type               string `json:"type"`
+	Price              string `json:"price,omitempty"`
+	TIF                string `json:"tif,omitempty"`
+	OrderID            string `json:"order_id,omitempty"`
+	Async              bool   `json:"async,omitempty"`
+	ConfirmMarginTrade bool   `json:"confirm_margin_trade,omitempty"`
+	DryRun             bool   `json:"dry_run,omitempty"`
 }
 
 func resolvePlaceInput(source string) (resolvedPlace, *render.CLIError) {
@@ -531,22 +543,23 @@ func buildPlace(in placeInput) (resolvedPlace, *render.CLIError) {
 		}
 		orderID = generated
 	}
-	if len(orderID) > 36 {
-		return resolvedPlace{}, render.UsageError("order-id must be at most 36 characters")
+	if err := validateOrderID(orderID); err != nil {
+		return resolvedPlace{}, render.UsageError(err.Error())
 	}
 
 	return resolvedPlace{
-		instrument: in.Instrument,
-		direction:  direction,
-		orderType:  orderType,
-		lots:       in.Quantity,
-		price:      price,
-		priceStr:   priceStr,
-		tif:        tif,
-		tifStr:     in.TIF,
-		orderID:    orderID,
-		async:      in.Async,
-		dryRun:     in.DryRun,
+		instrument:         in.Instrument,
+		direction:          direction,
+		orderType:          orderType,
+		lots:               in.Quantity,
+		price:              price,
+		priceStr:           priceStr,
+		tif:                tif,
+		tifStr:             in.TIF,
+		orderID:            orderID,
+		async:              in.Async,
+		confirmMarginTrade: in.ConfirmMarginTrade,
+		dryRun:             in.DryRun,
 	}, nil
 }
 
@@ -676,7 +689,9 @@ func (a *app) ordersCancelCmd() *cobra.Command {
 			resp, err := orders.New(conn).Cancel(ctx, settings.AccountID, args[0])
 			meta := render.NewMeta(settings.AccountID, info.TrackingID(), time.Since(start))
 			if err != nil {
-				return a.fail(mode, render.Classify(err, callContext(info, true)), meta)
+				cerr := render.Classify(err, callContext(info, true))
+				command := fmt.Sprintf("tinvest orders get %s", args[0])
+				return a.fail(mode, addCancelReconcileHint(cerr, args[0], command), meta)
 			}
 			data := cancelData{OrderID: args[0], Time: render.Timestamp(resp.GetTime())}
 			if mode == "table" {
@@ -691,6 +706,7 @@ func (a *app) ordersCancelCmd() *cobra.Command {
 func (a *app) ordersReplaceCmd() *cobra.Command {
 	var quantity int64
 	var price string
+	var confirmMarginTrade bool
 	cmd := &cobra.Command{
 		Use:   "replace <order-id>",
 		Short: "Replace an active order's price and/or quantity",
@@ -723,11 +739,36 @@ func (a *app) ordersReplaceCmd() *cobra.Command {
 			if v := pol.CheckKillSwitch(); v != nil {
 				return a.fail(mode, render.PolicyError(v.Message, v.Details), render.NewMeta(settings.AccountID, "", time.Since(start)))
 			}
+			if v := pol.CheckLocal(policy.OrderIntent{Lots: quantity, Price: priceQ}); v != nil {
+				return a.fail(mode, render.PolicyError(v.Message, v.Details), render.NewMeta(settings.AccountID, "", time.Since(start)))
+			}
 			conn, cerr := a.connect(cmd.Context(), settings)
 			if cerr != nil {
 				return a.fail(mode, cerr, render.NewMeta(settings.AccountID, "", time.Since(start)))
 			}
 			defer func() { _ = conn.Close() }()
+			cl := orders.New(conn)
+
+			stateCtx, stateInfo := transport.WithCallInfo(cmd.Context())
+			state, err := cl.Get(stateCtx, settings.AccountID, args[0], false)
+			if err != nil {
+				meta := render.NewMeta(settings.AccountID, stateInfo.TrackingID(), time.Since(start))
+				return a.fail(mode, render.Classify(err, callContext(stateInfo, false)), meta)
+			}
+			instrumentID := replacementInstrumentID(state)
+			if instrumentID == "" {
+				return a.fail(mode, &render.CLIError{Code: render.CodeInternal, Message: "broker order state contains no instrument identifier"}, render.NewMeta(settings.AccountID, stateInfo.TrackingID(), time.Since(start)))
+			}
+			inst, cerr, trackingID := a.resolveOne(cmd.Context(), conn, instrumentID, false)
+			if cerr != nil {
+				return a.fail(mode, cerr, render.NewMeta(settings.AccountID, trackingID, time.Since(start)))
+			}
+			if v := replacementPolicyViolation(pol, quantity, priceQ, state, inst); v != nil {
+				return a.fail(mode, render.PolicyError(v.Message, v.Details), render.NewMeta(settings.AccountID, stateInfo.TrackingID(), time.Since(start)))
+			}
+			if err := orders.ValidatePriceIncrement(priceQ, inst.GetMinPriceIncrement()); err != nil {
+				return a.fail(mode, render.UsageError(err.Error()), render.NewMeta(settings.AccountID, "", time.Since(start)))
+			}
 
 			// ReplaceOrder carries its own idempotency key. Its dedup retention
 			// is the same as PostOrder, so a fresh key is generated per attempt
@@ -746,17 +787,22 @@ func (a *app) ordersReplaceCmd() *cobra.Command {
 			entry, err := led.Begin(ledger.Intent{
 				IntentID: key, Kind: kindOrderReplace, AccountID: settings.AccountID,
 				Profile: settings.Profile, Attempt: 1, OrderID: key,
-				Payload: map[string]any{"replaces": args[0], "quantity": quantity, "price": price},
+				Payload: map[string]any{
+					"endpoint": settings.Endpoint, "replaces": args[0], "quantity": quantity,
+					"price": price, "confirm_margin_trade": confirmMarginTrade,
+				},
 			})
 			if err != nil {
 				return a.fail(mode, &render.CLIError{Code: render.CodeInternal, Message: err.Error()}, render.NewMeta(settings.AccountID, "", time.Since(start)))
 			}
-			_ = entry.SendStarted()
+			if err := entry.SendStarted(); err != nil {
+				return a.fail(mode, &render.CLIError{Code: render.CodeInternal, Message: fmt.Sprintf("ledger send-started: %v", err)}, render.NewMeta(settings.AccountID, "", time.Since(start)))
+			}
 
 			ctx, info := transport.WithCallInfo(cmd.Context())
-			resp, err := orders.New(conn).Replace(ctx, orders.ReplaceParams{
+			resp, err := cl.Replace(ctx, orders.ReplaceParams{
 				AccountID: settings.AccountID, OrderID: args[0], IdempotencyKey: key,
-				Lots: quantity, Price: priceQ,
+				Lots: quantity, Price: priceQ, ConfirmMarginTrade: confirmMarginTrade,
 			})
 			meta := render.NewMeta(settings.AccountID, info.TrackingID(), time.Since(start))
 			if err != nil {
@@ -778,7 +824,69 @@ func (a *app) ordersReplaceCmd() *cobra.Command {
 	}
 	cmd.Flags().Int64Var(&quantity, "quantity", 0, "new number of lots (positive)")
 	cmd.Flags().StringVar(&price, "price", "", "new limit price as a decimal string")
+	cmd.Flags().BoolVar(&confirmMarginTrade, "confirm-margin-trade", false, "confirm a replacement that may create an uncovered position")
 	return cmd
+}
+
+func replacementInstrumentID(state *investapi.OrderState) string {
+	if state == nil {
+		return ""
+	}
+	if state.GetInstrumentUid() != "" {
+		return state.GetInstrumentUid()
+	}
+	if state.GetFigi() != "" {
+		return state.GetFigi()
+	}
+	if state.GetTicker() != "" && state.GetClassCode() != "" {
+		return state.GetTicker() + "@" + state.GetClassCode()
+	}
+	return ""
+}
+
+func replacementPolicyViolation(
+	pol *policy.Policy,
+	lots int64,
+	requestedPrice *investapi.Quotation,
+	state *investapi.OrderState,
+	inst *investapi.Instrument,
+) *policy.Violation {
+	price := requestedPrice
+	if price == nil && state != nil {
+		if state.GetInitialSecurityPrice() != nil {
+			price = &investapi.Quotation{
+				Units: state.GetInitialSecurityPrice().GetUnits(),
+				Nano:  state.GetInitialSecurityPrice().GetNano(),
+			}
+		}
+	}
+	intent := policy.OrderIntent{Lots: lots, Price: absolutePolicyPrice(price)}
+	if state != nil {
+		intent.Direction = state.GetDirection()
+		intent.OrderType = state.GetOrderType()
+		intent.RawID = replacementInstrumentID(state)
+	}
+	if v := pol.CheckLocal(intent); v != nil {
+		return v
+	}
+	if inst != nil {
+		intent.UID = inst.GetUid()
+		intent.FIGI = inst.GetFigi()
+		intent.Ticker = inst.GetTicker()
+		intent.ClassCode = inst.GetClassCode()
+		intent.LotSize = inst.GetLot()
+		intent.Currency = inst.GetCurrency()
+	}
+	return pol.CheckResolved(intent)
+}
+
+// absolutePolicyPrice preserves the signed broker request while making a
+// notional cap apply to the magnitude of futures prices that may be negative.
+func absolutePolicyPrice(price *investapi.Quotation) *investapi.Quotation {
+	if price == nil || (price.GetUnits() >= 0 && price.GetNano() >= 0) {
+		return price
+	}
+	return &investapi.Quotation{Units: -price.GetUnits(), Nano: -price.GetNano()}
 }
 
 type previewData struct {
@@ -828,6 +936,9 @@ func (a *app) ordersPreviewCmd() *cobra.Command {
 				return a.fail(mode, render.Classify(err, callContext(info, false)), meta)
 			}
 			data := previewData{Preview: render.Preview(resp)}
+			if mode == "table" {
+				return placeTable(os.Stdout, placeData{Preview: &data.Preview})
+			}
 			return render.WriteJSON(os.Stdout, render.Success(data, meta))
 		},
 	}
@@ -886,7 +997,11 @@ func (a *app) ordersMaxLotsCmd() *cobra.Command {
 			if err != nil {
 				return a.fail(mode, render.Classify(err, callContext(info, false)), meta)
 			}
-			return render.WriteJSON(os.Stdout, render.Success(maxLotsData{MaxLots: render.MaxLots(resp)}, meta))
+			data := maxLotsData{MaxLots: render.MaxLots(resp)}
+			if mode == "table" {
+				return placeTable(os.Stdout, placeData{MaxLots: &data.MaxLots})
+			}
+			return render.WriteJSON(os.Stdout, render.Success(data, meta))
 		},
 	}
 	cmd.Flags().StringVar(&instrument, "instrument", "", "instrument id: uid, FIGI, or TICKER@CLASSCODE")
@@ -969,13 +1084,39 @@ func waitFlow(parent context.Context, cl orders.Client, accountID, orderID strin
 }
 
 type reconcileData struct {
-	Outcomes []render.ReconcileOutcomeView `json:"outcomes"`
+	Outcomes           []render.ReconcileOutcomeView `json:"outcomes"`
+	ForeignIntentCount int                           `json:"foreign_intent_count,omitempty"`
+	ForeignIntentHint  string                        `json:"foreign_intent_hint,omitempty"`
+}
+
+type reconcileTarget struct {
+	Profile  string
+	Endpoint string
+}
+
+type reconcileOptions struct {
+	AsyncNotFoundDelay time.Duration
+}
+
+const asyncReconcileNotFoundDelay = 2 * time.Second
+
+func newReconcileData(outcomes []render.ReconcileOutcomeView, foreignHint string) reconcileData {
+	data := reconcileData{Outcomes: outcomes}
+	for _, outcome := range outcomes {
+		if outcome.Outcome == "foreign" {
+			data.ForeignIntentCount++
+		}
+	}
+	if data.ForeignIntentCount > 0 {
+		data.ForeignIntentHint = foreignHint
+	}
+	return data
 }
 
 func (a *app) ordersReconcileCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "reconcile",
-		Short: "Resolve every unconfirmed intent in the journal against the broker",
+		Short: "Resolve every unconfirmed regular-order intent in the journal against the broker",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			start := time.Now()
@@ -996,26 +1137,34 @@ func (a *app) ordersReconcileCmd() *cobra.Command {
 			}
 			defer func() { _ = led.Close() }()
 
-			outcomes, cerr := reconcileFlow(cmd.Context(), orders.New(conn), led)
+			outcomes, cerr := reconcileFlowForTarget(
+				cmd.Context(), orders.New(conn), led,
+				reconcileTarget{Profile: settings.Profile, Endpoint: settings.Endpoint},
+				reconcileOptions{AsyncNotFoundDelay: asyncReconcileNotFoundDelay},
+			)
 			meta := render.NewMeta(settings.AccountID, "", time.Since(start))
 			if cerr != nil {
 				return a.fail(mode, cerr, meta)
 			}
 			if mode == "table" {
-				return render.ReconcileTable(os.Stdout, outcomes)
+				return reconcileTable(os.Stdout, outcomes)
 			}
-			return render.WriteJSON(os.Stdout, render.Success(reconcileData{Outcomes: outcomes}, meta))
+			return render.WriteJSON(os.Stdout, render.Success(newReconcileData(outcomes, stopReconcileCommand), meta))
 		},
 	}
 }
 
-// reconcileFlow resolves every Unresolved ledger entry against the broker
-// (plan §9). For each intent it queries GetOrderState by the client
-// idempotency key: a found order is closed out as Reconciled with its
-// lifecycle; a NOT_FOUND means the order never reached the broker, closed out
-// as "not-placed"; a transient error leaves the entry unresolved for the next
-// run. Reconcile is decoupled from cobra for testing.
-func reconcileFlow(ctx context.Context, cl orders.Client, led *ledger.Ledger) ([]render.ReconcileOutcomeView, *render.CLIError) {
+// reconcileFlowForTarget resolves regular order placement/replacement intents
+// only. Foreign intent kinds and intents recorded for another profile or
+// endpoint are reported and left untouched. Async placements require a second
+// delayed NOT_FOUND before they can be closed as not placed.
+func reconcileFlowForTarget(
+	ctx context.Context,
+	cl orders.Client,
+	led *ledger.Ledger,
+	target reconcileTarget,
+	options reconcileOptions,
+) ([]render.ReconcileOutcomeView, *render.CLIError) {
 	entries, err := led.Unresolved()
 	if err != nil {
 		return nil, &render.CLIError{Code: render.CodeInternal, Message: fmt.Sprintf("read journal: %v", err)}
@@ -1027,6 +1176,18 @@ func reconcileFlow(ctx context.Context, cl orders.Client, led *ledger.Ledger) ([
 			ClientOrderID: e.OrderID(),
 			AccountID:     e.AccountID(),
 		}
+		if e.Kind() != kindOrderPlace && e.Kind() != kindOrderReplace {
+			out.Outcome = "foreign"
+			out.Error = foreignIntentMessage(e.Kind(), stopReconcileCommand)
+			outcomes = append(outcomes, out)
+			continue
+		}
+		if outcome, message := reconcileTargetMismatch(e, target); message != "" {
+			out.Outcome = outcome
+			out.Error = message
+			outcomes = append(outcomes, out)
+			continue
+		}
 		if e.OrderID() == "" || e.AccountID() == "" {
 			// Nothing to look the order up by; leave it for a human.
 			out.Outcome = "indeterminate"
@@ -1034,10 +1195,32 @@ func reconcileFlow(ctx context.Context, cl orders.Client, led *ledger.Ledger) ([
 			outcomes = append(outcomes, out)
 			continue
 		}
+		var payload orderPayload
+		if err := json.Unmarshal(e.Payload(), &payload); err != nil {
+			out.Outcome = "indeterminate"
+			out.Error = fmt.Sprintf("unreadable journal payload: %v", err)
+			outcomes = append(outcomes, out)
+			continue
+		}
 		cctx, info := transport.WithCallInfo(ctx)
 		state, err := cl.Get(cctx, e.AccountID(), e.OrderID(), true)
 		if err != nil {
 			if status.Code(err) == codes.NotFound {
+				if payload.Async {
+					state, info, err = recheckAsyncNotFound(ctx, cl, e, options.AsyncNotFoundDelay)
+					if err != nil && status.Code(err) != codes.NotFound {
+						out.Outcome = "indeterminate"
+						out.Error = fmt.Sprintf("one NOT_FOUND was observed, but confirmation failed; retry reconcile later: %s", render.Classify(err, callContext(info, false)).Message)
+						outcomes = append(outcomes, out)
+						continue
+					}
+					if err == nil {
+						setPlacedReconcileOutcome(&out, state)
+						_ = e.Reconciled(ledger.Result{OrderID: state.GetOrderId(), TrackingID: info.TrackingID()})
+						outcomes = append(outcomes, out)
+						continue
+					}
+				}
 				out.Outcome = "not-placed"
 				_ = e.Reconciled(ledger.Result{Error: "not-placed"})
 			} else {
@@ -1047,14 +1230,91 @@ func reconcileFlow(ctx context.Context, cl orders.Client, led *ledger.Ledger) ([
 			outcomes = append(outcomes, out)
 			continue
 		}
-		lifecycle := orders.Lifecycle(state.GetExecutionReportStatus())
-		out.Outcome = "placed"
-		out.OrderID = state.GetOrderId()
-		out.Lifecycle = lifecycle
+		setPlacedReconcileOutcome(&out, state)
 		_ = e.Reconciled(ledger.Result{OrderID: state.GetOrderId(), TrackingID: info.TrackingID()})
 		outcomes = append(outcomes, out)
 	}
 	return outcomes, nil
+}
+
+func recheckAsyncNotFound(
+	ctx context.Context,
+	cl orders.Client,
+	entry *ledger.Entry,
+	delay time.Duration,
+) (*investapi.OrderState, *transport.CallInfo, error) {
+	if delay > 0 {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			_, info := transport.WithCallInfo(ctx)
+			return nil, info, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	cctx, info := transport.WithCallInfo(ctx)
+	state, err := cl.Get(cctx, entry.AccountID(), entry.OrderID(), true)
+	return state, info, err
+}
+
+func setPlacedReconcileOutcome(out *render.ReconcileOutcomeView, state *investapi.OrderState) {
+	out.Outcome = "placed"
+	out.OrderID = state.GetOrderId()
+	out.Lifecycle = orders.Lifecycle(state.GetExecutionReportStatus())
+}
+
+func foreignIntentMessage(kind, command string) string {
+	return fmt.Sprintf("intent kind %q belongs to another reconcile command; run `%s`", kind, command)
+}
+
+func reconcileTargetMismatch(entry *ledger.Entry, target reconcileTarget) (string, string) {
+	if entry.Profile() != target.Profile {
+		if entry.Profile() == "" {
+			return "profile-mismatch", "intent was recorded without a named profile; rerun reconcile without --profile under its original endpoint"
+		}
+		return "profile-mismatch", fmt.Sprintf("intent belongs to profile %q; rerun with --profile %s", entry.Profile(), entry.Profile())
+	}
+	var payloadTarget struct {
+		Endpoint string `json:"endpoint"`
+	}
+	if err := json.Unmarshal(entry.Payload(), &payloadTarget); err != nil {
+		return "indeterminate", fmt.Sprintf("cannot determine the recorded endpoint from the journal payload: %v", err)
+	}
+	if payloadTarget.Endpoint == "" {
+		return "indeterminate", "journal entry predates endpoint recording; it cannot be reconciled safely and must be checked manually"
+	}
+	if payloadTarget.Endpoint != target.Endpoint {
+		return "profile-mismatch", fmt.Sprintf(
+			"intent was recorded for endpoint %q, but the active profile uses %q; restore the recorded endpoint for profile %q and rerun reconcile",
+			payloadTarget.Endpoint, target.Endpoint, target.Profile,
+		)
+	}
+	return "", ""
+}
+
+func reconcileTable(w io.Writer, outcomes []render.ReconcileOutcomeView) error {
+	rows := make([][]string, 0, len(outcomes)+1)
+	foreignCount := 0
+	for _, outcome := range outcomes {
+		if outcome.Outcome == "foreign" {
+			foreignCount++
+		}
+		rows = append(rows, []string{
+			outcome.IntentID, outcome.ClientOrderID, outcome.Outcome,
+			outcome.OrderID, outcome.Lifecycle, outcome.Error,
+		})
+	}
+	if foreignCount > 0 {
+		rows = append(rows, []string{
+			"", "", "foreign-summary", "", "",
+			fmt.Sprintf("%d foreign intent(s) skipped; use the command shown on each foreign line", foreignCount),
+		})
+	}
+	return render.Table(w,
+		[]string{"INTENT_ID", "CLIENT_ORDER_ID", "OUTCOME", "ORDER_ID", "LIFECYCLE", "DETAIL"},
+		rows,
+	)
 }
 
 // ---- shared helpers ----
@@ -1094,6 +1354,27 @@ func newOrderID() (string, error) {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
 }
 
+func validateOrderID(orderID string) error {
+	if len(orderID) != 36 || orderID[8] != '-' || orderID[13] != '-' || orderID[18] != '-' || orderID[23] != '-' {
+		return fmt.Errorf("order-id must be a UUID in canonical 8-4-4-4-12 format")
+	}
+	hexText := strings.ReplaceAll(orderID, "-", "")
+	if len(hexText) != 32 {
+		return fmt.Errorf("order-id must be a UUID in canonical 8-4-4-4-12 format")
+	}
+	if _, err := hex.DecodeString(hexText); err != nil {
+		return fmt.Errorf("order-id must be a UUID in canonical 8-4-4-4-12 format")
+	}
+	return nil
+}
+
+func addCancelReconcileHint(cerr *render.CLIError, orderID, command string) *render.CLIError {
+	if cerr != nil && cerr.Code == render.CodeUnconfirmed {
+		cerr.ReconcileHint = &render.ReconcileHint{OrderID: orderID, Command: command}
+	}
+	return cerr
+}
+
 // placeTable renders a place/dry-run/replace result for humans.
 func placeTable(w io.Writer, data placeData) error {
 	switch {
@@ -1107,6 +1388,30 @@ func placeTable(w io.Writer, data placeData) error {
 			rows = append(rows, []string{"sell_max_lots", fmt.Sprint(data.MaxLots.SellMaxLots)})
 		}
 		return render.Table(w, []string{"FIELD", "VALUE"}, rows)
+	case data.Preview != nil:
+		rows := [][]string{{"lots_requested", fmt.Sprint(data.Preview.LotsRequested)}}
+		for _, item := range []struct {
+			name  string
+			value *render.Decimal
+		}{
+			{"initial_order_amount", data.Preview.InitialAmount},
+			{"total_order_amount", data.Preview.TotalAmount},
+			{"executed_commission", data.Preview.Commission},
+			{"executed_commission_rub", data.Preview.CommissionRub},
+		} {
+			if item.value != nil {
+				rows = append(rows, []string{item.name, decimalView(item.value)})
+			}
+		}
+		return render.Table(w, []string{"FIELD", "VALUE"}, rows)
+	case data.MaxLots != nil:
+		rows := [][]string{
+			{"currency", data.MaxLots.Currency},
+			{"buy_max_lots", fmt.Sprint(data.MaxLots.BuyMaxLots)},
+			{"buy_max_market_lots", fmt.Sprint(data.MaxLots.BuyMaxMarketLot)},
+			{"sell_max_lots", fmt.Sprint(data.MaxLots.SellMaxLots)},
+		}
+		return render.Table(w, []string{"FIELD", "VALUE"}, rows)
 	case data.Async != nil:
 		return render.Table(w, []string{"CLIENT_ORDER_ID", "TRADE_INTENT_ID", "LIFECYCLE"},
 			[][]string{{data.Async.ClientOrderID, data.Async.TradeIntentID, data.Async.Lifecycle}})
@@ -1116,4 +1421,14 @@ func placeTable(w io.Writer, data placeData) error {
 			[][]string{{o.OrderID, o.ClientOrderID, o.Lifecycle, fmt.Sprint(o.Lots.Requested), fmt.Sprint(o.Lots.Executed)}})
 	}
 	return nil
+}
+
+func decimalView(value *render.Decimal) string {
+	if value == nil {
+		return ""
+	}
+	if value.Currency == "" {
+		return value.Value
+	}
+	return value.Value + " " + strings.ToUpper(value.Currency)
 }

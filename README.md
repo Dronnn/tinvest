@@ -2,7 +2,7 @@
 
 A command-line interface for the [T-Invest API](https://developer.tbank.ru/invest/intro/intro) (T-Bank brokerage). `tinvest` is a thin, predictable broker adapter: it retrieves data, executes requested operations, validates inputs, and returns structured JSON — nothing more. It performs no market analysis and makes no trading decisions, which makes it equally suitable for shell scripts, automation, and AI agents.
 
-> **Status: early development.** The command surface and output contract are not stable yet.
+> **Status: feature-complete pre-1.0.** The implemented command groups are usable end to end, but the command surface and output contract may still evolve before v1.0.
 
 ## Design principles
 
@@ -97,13 +97,15 @@ tinvest stream …        # resilient market/account/order streams as NDJSON
 
 The order group is idempotent and journaled: every placement writes a client
 `order_id` and a write-ahead intent record before the network send, so a crash
-or a timed-out send never issues a duplicate and can always be reconciled.
+or timed-out send is never retried under a new key. Regular order intents can
+be looked up by that key; reconciliation leaves profile mismatches and other
+indeterminate cases unresolved instead of guessing.
 
 ```sh
 # Place a limit order (idempotent; order_id generated if omitted).
 tinvest orders place --account <id> --instrument <uid|FIGI|TICKER@CLASSCODE> \
     --direction buy --quantity 1 --type limit --price 250.5 [--tif day|ioc|fok] \
-    [--order-id <uuid>] [--async] [--dry-run] [--yes]
+    [--order-id <uuid>] [--async] [--confirm-margin-trade] [--dry-run] [--yes]
 
 # Same request as a JSON document (mirrors the flags; unknown fields rejected).
 echo '{"instrument":"<uid>","direction":"buy","quantity":1,"type":"limit","price":"250.5"}' \
@@ -114,9 +116,9 @@ tinvest orders max-lots --account <id> --instrument <id> [--price 250.5]
 tinvest orders get <order-id> --account <id> [--request-id]
 tinvest orders list --account <id>
 tinvest orders cancel <order-id> --account <id>
-tinvest orders replace <order-id> --account <id> --quantity 2 [--price 251]
+tinvest orders replace <order-id> --account <id> --quantity 2 [--price 251] [--confirm-margin-trade]
 tinvest orders wait <order-id> --account <id> [--timeout 60s]   # block until terminal
-tinvest orders reconcile --account <id>                         # resolve every unconfirmed intent
+tinvest orders reconcile --account <id>                         # reconcile regular-order intents for the active profile/endpoint
 ```
 
 `--dry-run` validates, previews cost (`GetOrderPrice`), and reports max lots
@@ -125,8 +127,10 @@ and returns a `trade_intent_id`. Mutating commands require `--account` (or a
 profile default) — the CLI never guesses.
 
 Placement guardrails live in an optional **policy file** referenced from a
-profile as `policy_file`. A breach fails with exit 2, code `POLICY`, before any
-network call:
+profile as `policy_file`. Locally decidable breaches fail with exit 2, code
+`POLICY`, before any broker request. Instrument allowlist/notional checks and
+the open-order cap require read-only broker lookups, but still run before the
+placement or replacement mutation:
 
 ```toml
 # policy.toml
@@ -162,15 +166,20 @@ tinvest stop-orders place --account <id> --instrument <uid|FIGI|TICKER@CLASSCODE
 
 tinvest stop-orders list --account <id> [--status all|active|executed|canceled|expired]
 tinvest stop-orders cancel <stop-order-id> --account <id>
-tinvest stop-orders reconcile --account <id>   # list-match every unconfirmed stop intent
+tinvest stop-orders reconcile --account <id>   # reconcile stop intents for the active profile/endpoint
 ```
+
+`--exchange-order-type`, `--take-profit-type`, and trailing parameters are
+take-profit-only.
 
 `--dry-run` is local validation only — stop orders have no
 `GetOrderPrice`/`GetMaxLots` equivalent to preview against, so nothing is sent
 and no network call is made. `GetStopOrders` does not echo the client
-`order_id`, so `reconcile` matches unresolved intents against the list by
-instrument/direction/quantity/stop-price; an ambiguous match is reported
-honestly rather than guessed at.
+`order_id`, so `reconcile` requests all statuses and matches every available
+request field, including order type, child-order type/price, expiry, trailing
+parameters, and a creation window around the journaled intent time. Zero,
+multiple, legacy, or otherwise uncertain matches remain unresolved with a
+manual-check explanation.
 
 ### Sandbox
 
@@ -269,6 +278,12 @@ policy_file = "~/.config/tinvest/policy.toml"   # optional pre-trade guardrails
 ```
 
 Token resolution order: `--token-file` flag, then `TINVEST_TOKEN`, then the profile's `token_file`.
+
+## License
+
+Licensed under the Apache License, Version 2.0. Copyright 2026 Andreas Maier.
+See [LICENSE](LICENSE). Third-party provenance and attribution are recorded in
+[NOTICE](NOTICE) and [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
 ## Disclaimer
 

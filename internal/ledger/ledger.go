@@ -52,6 +52,10 @@ const (
 	monthFmt = "2006-01"
 )
 
+// syncDir indirects directory fsync so the durability path (finding F8) can be
+// exercised by tests. Production always uses the platform fsyncDir.
+var syncDir = fsyncDir
+
 // Intent is the durable description of a mutation, written at Begin before any
 // network I/O. Per the idempotency contract (§9), the client-generated
 // order_id lives inside Payload and is also surfaced in OrderID, so a crash
@@ -137,10 +141,36 @@ type Ledger struct {
 	crc *crc32.Table
 	now func() time.Time // overridable in tests for rotation
 
-	mu    sync.Mutex
-	f     *os.File
-	month string // "2006-01" of the open file
-	seq   int64  // process-monotonic, seeded from the current file at Open
+	mu      sync.Mutex
+	f       *os.File
+	month   string     // "2006-01" of the open file
+	seq     int64      // process-monotonic, seeded from the current file at Open
+	repairs []TornTail // torn tails detected+quarantined during this handle's life
+}
+
+// TornTail records a torn final write that Open detected and repaired: a partial
+// line at EOF (no terminating newline, e.g. power loss mid-append) that would
+// otherwise have been concatenated onto by the next append and corrupted a fresh
+// record (finding F7). The torn bytes were moved to Sidecar before the journal
+// file was truncated back to its last complete record.
+type TornTail struct {
+	File    string `json:"file"`
+	Bytes   int    `json:"bytes"`
+	Sidecar string `json:"sidecar"`
+}
+
+// RecoveryError reports that the recovery scan (Unresolved) encountered corrupt
+// journal lines. The unresolved entries that could still be read are returned
+// alongside it, so a caller may proceed with partial recovery after inspecting
+// Corruptions — but the failure is surfaced loudly rather than silently dropping
+// the affected intents, which could otherwise hide an unresolved mutation
+// (finding F7/F12).
+type RecoveryError struct {
+	Corruptions []Corruption
+}
+
+func (e *RecoveryError) Error() string {
+	return fmt.Sprintf("ledger: recovery scan found %d corrupt journal line(s) that may hide unresolved intents", len(e.Corruptions))
 }
 
 // DefaultDir resolves ${XDG_STATE_HOME:-~/.local/state}/tinvest/journal.
@@ -164,7 +194,7 @@ func Open(dir string) (*Ledger, error) {
 	if dir == "" {
 		return nil, errors.New("ledger: empty directory")
 	}
-	if err := os.MkdirAll(dir, dirPerm); err != nil {
+	if err := mkdirAllSync(dir, dirPerm); err != nil {
 		return nil, fmt.Errorf("ledger: create directory: %w", err)
 	}
 	l := &Ledger{
@@ -205,9 +235,15 @@ func (l *Ledger) openMonth(t time.Time) error {
 		return fmt.Errorf("ledger: open %s: %w", path, err)
 	}
 	if created {
-		if err := fsyncDir(l.dir); err != nil {
+		if err := syncDir(l.dir); err != nil {
 			_ = f.Close()
 			return fmt.Errorf("ledger: fsync directory: %w", err)
+		}
+	} else {
+		// Repair a torn final write before any append lands on top of it (F7).
+		if err := l.repairTornTail(f, path); err != nil {
+			_ = f.Close()
+			return err
 		}
 	}
 
@@ -226,6 +262,154 @@ func (l *Ledger) openMonth(t time.Time) error {
 		l.seq = seq
 	}
 	return nil
+}
+
+// TornTails returns the torn final writes Open detected and repaired during this
+// handle's life, so a caller can surface them (finding F7). Empty in the common
+// case of a clean journal.
+func (l *Ledger) TornTails() []TornTail {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]TornTail, len(l.repairs))
+	copy(out, l.repairs)
+	return out
+}
+
+// mkdirAllSync is os.MkdirAll plus durability: it fsyncs the parent of every
+// directory level it creates, so the directory entries survive a power loss even
+// though only the file inside gets fsynced later (finding F8). A level that
+// already exists is left untouched (and its parent not fsynced). On platforms
+// without directory fsync (Windows) fsyncDir is a documented no-op.
+func mkdirAllSync(path string, perm os.FileMode) error {
+	path = filepath.Clean(path)
+
+	// Collect the missing levels from the target up to the first existing ancestor.
+	var missing []string
+	for p := path; ; {
+		info, err := os.Stat(p)
+		if err == nil {
+			if !info.IsDir() {
+				return fmt.Errorf("ledger: %s exists and is not a directory", p)
+			}
+			break
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		missing = append(missing, p)
+		parent := filepath.Dir(p)
+		if parent == p {
+			break // reached the filesystem root
+		}
+		p = parent
+	}
+
+	// Create from the topmost missing level down, fsyncing each new directory's
+	// parent so the creation is durable.
+	for i := len(missing) - 1; i >= 0; i-- {
+		d := missing[i]
+		if err := os.Mkdir(d, perm); err != nil && !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		if err := syncDir(filepath.Dir(d)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// repairTornTail detects a torn final write — a partial line at EOF with no
+// terminating newline (e.g. power loss mid-append) — and repairs it so the next
+// append starts on a clean record boundary instead of concatenating onto the
+// partial bytes and corrupting a freshly written record (finding F7). The torn
+// bytes are preserved in a "<file>.corrupt" sidecar before the file is truncated
+// back to its last complete line; both are fsynced. Mid-file corruption (a full,
+// newline-terminated line that later fails its checksum) is deliberately left
+// alone — only the trailing partial is repaired; readRecords/Verify report the
+// rest. Held under the flock so a concurrent appender cannot be truncated
+// mid-write.
+func (l *Ledger) repairTornTail(f *os.File, path string) error {
+	if err := lockFile(f); err != nil {
+		return fmt.Errorf("ledger: lock for repair: %w", err)
+	}
+	defer func() { _ = unlockFile(f) }()
+
+	st, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	size := st.Size()
+	if size == 0 {
+		return nil
+	}
+	const window = 64 * 1024
+	from := int64(0)
+	if size > window {
+		from = size - window
+	}
+	buf := make([]byte, size-from)
+	if _, err := f.ReadAt(buf, from); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	if buf[len(buf)-1] == '\n' {
+		return nil // clean tail: the last committed append ended in a newline
+	}
+
+	idx := bytes.LastIndexByte(buf, '\n')
+	var truncateAt int64
+	switch {
+	case idx >= 0:
+		truncateAt = from + int64(idx) + 1
+	case from == 0:
+		truncateAt = 0 // the whole file is a single unterminated line
+	default:
+		// No record boundary within the read window and the window does not cover
+		// the whole file (a single line larger than the window). Leave it rather
+		// than risk destroying data we cannot bound.
+		return nil
+	}
+
+	torn := make([]byte, size-truncateAt)
+	if _, err := f.ReadAt(torn, truncateAt); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	// Preserve before truncating: a quarantine failure must not lose the bytes.
+	sidecar := path + ".corrupt"
+	if err := quarantine(sidecar, torn, l.now().UTC()); err != nil {
+		return fmt.Errorf("ledger: quarantine torn tail: %w", err)
+	}
+	if err := f.Truncate(truncateAt); err != nil {
+		return fmt.Errorf("ledger: truncate torn tail: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("ledger: fsync after repair: %w", err)
+	}
+	l.repairs = append(l.repairs, TornTail{
+		File:    filepath.Base(path),
+		Bytes:   len(torn),
+		Sidecar: filepath.Base(sidecar),
+	})
+	return nil
+}
+
+// quarantine appends torn bytes to a sidecar file with a timestamped header and
+// fsyncs it, so the partial record is preserved for forensics rather than lost.
+func quarantine(sidecar string, torn []byte, ts time.Time) error {
+	s, err := os.OpenFile(sidecar, os.O_CREATE|os.O_WRONLY|os.O_APPEND, filePerm)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = s.Close() }()
+	header := fmt.Sprintf("# torn tail quarantined %s (%d bytes)\n", ts.Format(time.RFC3339Nano), len(torn))
+	if _, err := s.Write(append([]byte(header), torn...)); err != nil {
+		return err
+	}
+	if len(torn) == 0 || torn[len(torn)-1] != '\n' {
+		if _, err := s.Write([]byte("\n")); err != nil {
+			return err
+		}
+	}
+	return s.Sync()
 }
 
 // append writes one record: it rotates the file if the month changed, assigns
@@ -396,25 +580,37 @@ func (e *Entry) PayloadHash() string      { return e.payloadHash }
 func (e *Entry) Payload() json.RawMessage { return e.payload }
 func (e *Entry) Stage() string            { return e.stage }
 
-// Unresolved scans the current and previous month files and returns a handle
-// for every intent whose last recorded stage is intent-created or send-started
-// — the intents that may have reached the broker and need reconciliation. The
-// returned handles carry the order_id and payload from the journal, and can be
-// closed out with Reconciled. Corrupt lines are skipped.
+// Unresolved scans every journal file and returns a handle for every intent
+// whose last recorded stage is intent-created or send-started — the intents that
+// may have reached the broker and need reconciliation. The returned handles carry
+// the order_id and payload from the journal, and can be closed out with
+// Reconciled.
+//
+// All files are scanned, in chronological (sorted) order, so an unresolved intent
+// from any month is visible, not just the current and previous ones (finding
+// F12): a mutation whose fate was never recorded must never fall off the recovery
+// horizon. Filenames are YYYY-MM, so lexical order is chronological and a later
+// file's stage supersedes an earlier one for the same intent.
+//
+// If any journal line is corrupt, the readable unresolved entries are still
+// returned but a *RecoveryError is returned alongside them, so corruption that
+// could hide an unresolved intent is surfaced loudly rather than silently
+// skipped (finding F7).
 func (l *Ledger) Unresolved() ([]*Entry, error) {
-	now := l.now().UTC()
-	// Read previous month first, then current, so a stage recorded this month
-	// supersedes one from last month for the same intent.
-	files := []string{
-		filepath.Join(l.dir, now.AddDate(0, -1, 0).Format(monthFmt)+".jsonl"),
-		filepath.Join(l.dir, now.Format(monthFmt)+".jsonl"),
+	paths, err := filepath.Glob(filepath.Join(l.dir, "*.jsonl"))
+	if err != nil {
+		return nil, err
 	}
+	sort.Strings(paths)
+
 	last := make(map[string]record)
-	for _, path := range files {
-		recs, _, err := readRecords(path, l.crc)
+	var corruptions []Corruption
+	for _, path := range paths {
+		recs, corr, err := readRecords(path, l.crc)
 		if err != nil {
 			return nil, err
 		}
+		corruptions = append(corruptions, corr...)
 		for _, r := range recs {
 			last[r.IntentID] = r
 		}
@@ -427,6 +623,9 @@ func (l *Ledger) Unresolved() ([]*Entry, error) {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].seq < out[j].seq })
+	if len(corruptions) > 0 {
+		return out, &RecoveryError{Corruptions: corruptions}
+	}
 	return out, nil
 }
 

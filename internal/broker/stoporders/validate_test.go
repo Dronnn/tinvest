@@ -12,11 +12,10 @@ func q(units int64, nano int32) *investapi.Quotation {
 
 func baseBasics() BasicsInput {
 	return BasicsInput{
-		StopOrderType:     investapi.StopOrderType_STOP_ORDER_TYPE_STOP_LOSS,
-		Quantity:          1,
-		StopPrice:         q(100, 0),
-		ExpirationType:    investapi.StopOrderExpirationType_STOP_ORDER_EXPIRATION_TYPE_GOOD_TILL_CANCEL,
-		ExchangeOrderType: investapi.ExchangeOrderType_EXCHANGE_ORDER_TYPE_MARKET,
+		StopOrderType:  investapi.StopOrderType_STOP_ORDER_TYPE_STOP_LOSS,
+		Quantity:       1,
+		StopPrice:      q(100, 0),
+		ExpirationType: investapi.StopOrderExpirationType_STOP_ORDER_EXPIRATION_TYPE_GOOD_TILL_CANCEL,
 	}
 }
 
@@ -119,6 +118,40 @@ func TestValidateBasicsTakeProfitTypeTrailingRequiresTrailingFields(t *testing.T
 	in.TakeProfitType = investapi.TakeProfitType_TAKE_PROFIT_TYPE_TRAILING
 	if err := ValidateBasics(in); err == nil {
 		t.Error("take-profit-type trailing without trailing fields must fail")
+	}
+}
+
+func TestValidateBasicsRejectsTakeProfitTypeForOtherStopTypes(t *testing.T) {
+	for _, stopType := range []investapi.StopOrderType{
+		investapi.StopOrderType_STOP_ORDER_TYPE_STOP_LOSS,
+		investapi.StopOrderType_STOP_ORDER_TYPE_STOP_LIMIT,
+	} {
+		in := baseBasics()
+		in.StopOrderType = stopType
+		if stopType == investapi.StopOrderType_STOP_ORDER_TYPE_STOP_LIMIT {
+			in.Price = q(99, 0)
+		}
+		in.TakeProfitType = investapi.TakeProfitType_TAKE_PROFIT_TYPE_REGULAR
+		if err := ValidateBasics(in); err == nil {
+			t.Errorf("take-profit-type on %v must fail", stopType)
+		}
+	}
+}
+
+func TestValidateBasicsRejectsExchangeOrderTypeForOtherStopTypes(t *testing.T) {
+	for _, stopType := range []investapi.StopOrderType{
+		investapi.StopOrderType_STOP_ORDER_TYPE_STOP_LOSS,
+		investapi.StopOrderType_STOP_ORDER_TYPE_STOP_LIMIT,
+	} {
+		in := baseBasics()
+		in.StopOrderType = stopType
+		if stopType == investapi.StopOrderType_STOP_ORDER_TYPE_STOP_LIMIT {
+			in.Price = q(99, 0)
+		}
+		in.ExchangeOrderType = investapi.ExchangeOrderType_EXCHANGE_ORDER_TYPE_MARKET
+		if err := ValidateBasics(in); err == nil {
+			t.Errorf("exchange-order-type on %v must fail", stopType)
+		}
 	}
 }
 
