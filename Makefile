@@ -13,7 +13,7 @@ BUF := go run github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
 
 .DEFAULT_GOAL := build
 
-.PHONY: build test test-live lint-live vet lint proto proto-lint tidy clean
+.PHONY: build test test-live lint-live vet lint proto proto-lint tidy clean docs-commands
 
 build:
 	go build ./...
@@ -30,6 +30,13 @@ test-live:
 # The default lint run does not compile e2elive-tagged files; lint them here.
 lint-live:
 	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run --build-tags e2elive ./test/e2e-live/...
+
+# Regenerate COMMANDS.md from the compiled binary's --help output.
+docs-commands:
+	@mkdir -p .build
+	go build -o .build/tinvest ./cmd/tinvest
+	sh scripts/gen-commands-doc.sh .build/tinvest
+	@rm -rf .build
 
 vet:
 	go vet ./...

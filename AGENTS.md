@@ -5,6 +5,10 @@ Use `tinvest` as a command-per-operation interface. Run broker operations with
 Utility output such as `--help` and `completion` is prose or a shell script,
 not a JSON envelope.
 
+The complete per-command flag reference is [COMMANDS.md](COMMANDS.md),
+generated from the binary's `--help` output; `tinvest [command] --help` serves
+the same text at runtime. This file defines the semantics those commands share.
+
 ## Unary JSON contract
 
 Every non-stream broker operation returns one envelope:

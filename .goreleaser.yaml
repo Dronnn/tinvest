@@ -32,6 +32,8 @@ archives:
           - zip
     files:
       - README.md
+      - AGENTS.md
+      - COMMANDS.md
       - LICENSE
       - NOTICE
       - THIRD_PARTY_LICENSES.md

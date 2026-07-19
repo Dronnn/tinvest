@@ -72,6 +72,10 @@ Use `tinvest completion <shell> --help` for persistent installation paths.
 
 ## Usage
 
+The full per-command flag reference is [COMMANDS.md](COMMANDS.md) (generated
+via `make docs-commands`); the machine contract for AI agents — envelope,
+exit codes, reconcile protocol — is [AGENTS.md](AGENTS.md).
+
 Command groups:
 
 ```sh
