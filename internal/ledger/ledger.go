@@ -392,6 +392,23 @@ func (l *Ledger) repairTornTail(f *os.File, path string) error {
 	return nil
 }
 
+// repairTornTailAt opens a journal file read-write and repairs a torn final
+// write in it. It exists so the recovery scan can repair a torn tail in ANY
+// month, not just the appending one: an unrepaired torn tail in an older month
+// would otherwise make every reconciliation abort on corruption forever (finding
+// F9). A missing file is not an error.
+func (l *Ledger) repairTornTailAt(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR, filePerm)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("ledger: open %s for repair: %w", path, err)
+	}
+	defer func() { _ = f.Close() }()
+	return l.repairTornTail(f, path)
+}
+
 // quarantine appends torn bytes to a sidecar file with a timestamped header and
 // fsyncs it, so the partial record is preserved for forensics rather than lost.
 func quarantine(sidecar string, torn []byte, ts time.Time) error {
@@ -603,7 +620,29 @@ func (l *Ledger) Unresolved() ([]*Entry, error) {
 	}
 	sort.Strings(paths)
 
-	last := make(map[string]record)
+	// Repair a torn final write in any scanned file before reading it, so a torn
+	// tail in an older month cannot make every recovery scan abort on corruption
+	// (finding F9). The current month file was already repaired at Open; repairing
+	// it again is a no-op on a clean tail.
+	for _, path := range paths {
+		if err := l.repairTornTailAt(path); err != nil {
+			return nil, err
+		}
+	}
+
+	// Aggregate per intent id rather than keeping only the last record: an intent
+	// id can carry more than one lifecycle (concurrent same-id sends), and
+	// last-write-wins would let a later lifecycle's resolution hide an earlier
+	// dangling send that may have reached the broker (finding F8). Count opens
+	// (intent-created) against closes (broker-confirmed/rejected/reconciled): an
+	// id is unresolved if its last stage is itself unresolved OR opens > closes.
+	type idAgg struct {
+		opens, closes int
+		last          record // last-seen record, any stage
+		open          record // last-seen unresolved-stage record, for reconcile
+		hasOpen       bool
+	}
+	aggs := make(map[string]*idAgg)
 	var corruptions []Corruption
 	for _, path := range paths {
 		recs, corr, err := readRecords(path, l.crc)
@@ -612,15 +651,35 @@ func (l *Ledger) Unresolved() ([]*Entry, error) {
 		}
 		corruptions = append(corruptions, corr...)
 		for _, r := range recs {
-			last[r.IntentID] = r
+			a := aggs[r.IntentID]
+			if a == nil {
+				a = &idAgg{}
+				aggs[r.IntentID] = a
+			}
+			a.last = r
+			switch r.Stage {
+			case StageIntentCreated:
+				a.opens++
+				a.open, a.hasOpen = r, true
+			case StageSendStarted:
+				a.open, a.hasOpen = r, true
+			case StageBrokerConfirmed, StageBrokerRejected, StageReconciled:
+				a.closes++
+			}
 		}
 	}
 
 	var out []*Entry
-	for _, r := range last {
-		if r.Stage == StageIntentCreated || r.Stage == StageSendStarted {
-			out = append(out, l.entryFromRecord(r))
+	for _, a := range aggs {
+		lastUnresolved := a.last.Stage == StageIntentCreated || a.last.Stage == StageSendStarted
+		if !lastUnresolved && a.opens <= a.closes {
+			continue
 		}
+		rep := a.last
+		if a.hasOpen {
+			rep = a.open
+		}
+		out = append(out, l.entryFromRecord(rep))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].seq < out[j].seq })
 	if len(corruptions) > 0 {

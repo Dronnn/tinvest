@@ -114,9 +114,23 @@ func Load(path string) (*Policy, error) {
 		return nil, fmt.Errorf("policy: unknown key %q in %s", undecoded[0].String(), path)
 	}
 
+	// Reject explicitly-set non-positive caps: a cap of 0 or a negative value
+	// silently disables the guardrail (the "> 0" checks never fire), which is a
+	// dangerous misconfiguration. Omitting the key is how you say "no cap" (F12).
+	if md.IsDefined("max_lots_per_order") && f.MaxLotsPerOrder <= 0 {
+		return nil, fmt.Errorf("policy: max_lots_per_order must be positive (got %d); omit it for no cap", f.MaxLotsPerOrder)
+	}
+	if md.IsDefined("max_open_orders") && f.MaxOpenOrders <= 0 {
+		return nil, fmt.Errorf("policy: max_open_orders must be positive (got %d); omit it for no cap", f.MaxOpenOrders)
+	}
+
 	if f.MaxNotionalPerOrder != "" {
-		if _, err := render.ParseQuotation(f.MaxNotionalPerOrder); err != nil {
+		q, err := render.ParseQuotation(f.MaxNotionalPerOrder)
+		if err != nil {
 			return nil, fmt.Errorf("policy: invalid max_notional_per_order %q: %w", f.MaxNotionalPerOrder, err)
+		}
+		if quotationRat(q).Sign() <= 0 {
+			return nil, fmt.Errorf("policy: max_notional_per_order must be positive (got %q); omit it for no cap", f.MaxNotionalPerOrder)
 		}
 		if f.NotionalCurrency == "" {
 			return nil, fmt.Errorf("policy: max_notional_per_order requires notional_currency")
@@ -184,11 +198,17 @@ type OrderIntent struct {
 // non-directory path component) blocks the mutation with a POLICY error saying
 // the check itself failed — never proceed when we cannot determine whether the
 // operator engaged the switch (finding F11).
+//
+// os.Lstat (not os.Stat) is used so a symlink AT the kill path counts as engaged
+// even when its target is missing: os.Stat would follow a dangling symlink to a
+// not-exists and treat the switch as absent, defeating it (finding F18). Lstat
+// stats the link itself, so any object at the path — file, dir, or dangling
+// symlink — engages the switch.
 func (p *Policy) CheckKillSwitch() *Violation {
 	if p == nil || p.KillSwitchFile == "" {
 		return nil
 	}
-	switch _, err := os.Stat(p.KillSwitchFile); {
+	switch _, err := os.Lstat(p.KillSwitchFile); {
 	case err == nil:
 		return newViolation("kill_switch",
 			fmt.Sprintf("kill switch engaged: %s exists, all mutations blocked", p.KillSwitchFile),
@@ -282,20 +302,30 @@ func (p *Policy) checkNotional(in OrderIntent) *Violation {
 	if in.Price == nil {
 		return nil
 	}
-	if p.NotionalCurrency != "" && in.Currency != "" && !strings.EqualFold(p.NotionalCurrency, in.Currency) {
+	// Fail closed when the metadata needed to enforce the cap is missing: a cap
+	// that compares across currencies (unknown instrument currency) or silently
+	// under-counts (unknown lot size) is worse than no cap — it lets a breaching
+	// order through (finding F12).
+	if in.Currency == "" {
+		return newViolation("max_notional_per_order",
+			"cannot enforce max_notional_per_order: the instrument's currency is unknown",
+			"policy_currency", p.NotionalCurrency)
+	}
+	if p.NotionalCurrency != "" && !strings.EqualFold(p.NotionalCurrency, in.Currency) {
 		return newViolation("max_notional_per_order",
 			fmt.Sprintf("order currency %s differs from policy notional currency %s; cannot enforce notional cap", in.Currency, p.NotionalCurrency),
 			"order_currency", in.Currency, "policy_currency", p.NotionalCurrency)
 	}
-
-	lotSize := int64(in.LotSize)
-	if lotSize <= 0 {
-		lotSize = 1
+	if in.LotSize <= 0 {
+		return newViolation("max_notional_per_order",
+			"cannot enforce max_notional_per_order: the instrument's lot size is unknown",
+			"policy_currency", p.NotionalCurrency)
 	}
+
 	// lots * lotSize can overflow int64 for extreme lot counts, which would wrap
 	// to a small or negative value and silently slip a huge order under the cap.
 	// Do the multiplication in big.Int so the notional is always exact (F11).
-	lotTotal := new(big.Int).Mul(big.NewInt(in.Lots), big.NewInt(lotSize))
+	lotTotal := new(big.Int).Mul(big.NewInt(in.Lots), big.NewInt(int64(in.LotSize)))
 	notional := quotationRat(in.Price)
 	notional.Mul(notional, new(big.Rat).SetInt(lotTotal))
 

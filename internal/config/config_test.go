@@ -346,3 +346,19 @@ func TestNoNetworkDependencies(t *testing.T) {
 		}
 	}
 }
+
+// TestUnknownConfigKeyRejected is the F11-config regression: a misspelled key
+// (here policy_fil instead of policy_file) must be rejected by name, not silently
+// dropped — a dropped key disables the guardrail it was meant to configure.
+func TestUnknownConfigKeyRejected(t *testing.T) {
+	clearEnv(t)
+	writeConfig(t, "[profiles.test]\nendpoint = \"prod\"\npolicy_fil = \"/etc/tinvest/policy.toml\"\n")
+
+	_, err := Load(Flags{Profile: "test"})
+	if err == nil {
+		t.Fatal("misspelled profile key was silently accepted")
+	}
+	if !strings.Contains(err.Error(), "policy_fil") {
+		t.Errorf("error should name the unknown key, got: %v", err)
+	}
+}

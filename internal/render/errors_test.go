@@ -1,6 +1,7 @@
 package render
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -10,6 +11,54 @@ import (
 
 	"tinvest/internal/transport"
 )
+
+// TestClassifyRawContextErrorOnSentMutationIsUnconfirmed is the F2 regression: a
+// raw context error (context.DeadlineExceeded/Canceled from retry backoff) has no
+// gRPC status, so status.FromError returns ok=false. The mutation phase rule must
+// still win — a sent-unconfirmed mutation is UNCONFIRMED (exit 7), never the !ok
+// INTERNAL path that would let a caller close the WAL as rejected.
+func TestClassifyRawContextErrorOnSentMutationIsUnconfirmed(t *testing.T) {
+	for _, err := range []error{context.DeadlineExceeded, context.Canceled} {
+		got := Classify(err, CallContext{Phase: transport.PhaseSentUnconfirmed, Mutation: true})
+		if got.Code != CodeUnconfirmed || got.ExitCode() != ExitUnconfirmed {
+			t.Errorf("Classify(%v, sent-unconfirmed mutation) = %s / exit %d, want UNCONFIRMED / 7", err, got.Code, got.ExitCode())
+		}
+	}
+	// A non-mutation with a raw context error is unchanged (INTERNAL): reads carry
+	// no WAL entry to protect.
+	if got := Classify(context.DeadlineExceeded, CallContext{Phase: transport.PhaseSentUnconfirmed}); got.Code != CodeInternal {
+		t.Errorf("read raw context error = %s, want INTERNAL", got.Code)
+	}
+}
+
+// TestClassifyFinalConfirmedResponseResolvesIdempotencyKey documents the F1
+// adjudication: with per-attempt confirmation, a definitive server response on the
+// FINAL retry attempt resolves the idempotency key. A business rejection means the
+// order was not placed (BROKER_REJECTED); the one non-authoritative broker response
+// (30057) is UNCONFIRMED; a server transient (Unavailable) stays NETWORK — the CLI
+// retries under the same order_id, which converges. Only a final sent-unconfirmed
+// attempt is UNCONFIRMED. So a later confirmed attempt legitimately overwriting an
+// earlier sent-unconfirmed one is correct, not a bug.
+func TestClassifyFinalConfirmedResponseResolvesIdempotencyKey(t *testing.T) {
+	confirmed := CallContext{Phase: transport.PhaseConfirmed, Mutation: true}
+	cases := []struct {
+		err  error
+		want Code
+	}{
+		{status.Error(codes.InvalidArgument, "30014"), CodeBrokerRejected},
+		{status.Error(codes.InvalidArgument, "30057"), CodeUnconfirmed},
+		{status.Error(codes.Unavailable, "temporarily down"), CodeNetwork},
+	}
+	for _, c := range cases {
+		if got := Classify(c.err, confirmed); got.Code != c.want {
+			t.Errorf("Classify(%v, confirmed mutation) = %s, want %s", c.err, got.Code, c.want)
+		}
+	}
+	if got := Classify(status.Error(codes.Unavailable, "x"),
+		CallContext{Phase: transport.PhaseSentUnconfirmed, Mutation: true}); got.Code != CodeUnconfirmed {
+		t.Errorf("final sent-unconfirmed mutation = %s, want UNCONFIRMED", got.Code)
+	}
+}
 
 func TestClassifyExitCodes(t *testing.T) {
 	cases := []struct {

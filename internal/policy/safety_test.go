@@ -87,3 +87,69 @@ func TestMarketOrderBypassesNotionalCap(t *testing.T) {
 		t.Errorf("market order blocked by notional cap, want documented bypass: %v", v)
 	}
 }
+
+// TestKillSwitchDanglingSymlinkEngaged is the F18 regression: a dangling symlink
+// at the kill-switch path must engage the switch. os.Stat would follow it to a
+// not-exists and treat the switch as absent; os.Lstat sees the link itself.
+func TestKillSwitchDanglingSymlinkEngaged(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "KILL")
+	if err := os.Symlink(filepath.Join(dir, "missing-target"), link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	p := &Policy{KillSwitchFile: link}
+	if v := p.CheckKillSwitch(); v == nil {
+		t.Error("a dangling kill-switch symlink must engage the switch (fail closed)")
+	}
+}
+
+// TestPolicyLoadRejectsNonPositiveCaps is the F12 regression: an explicitly-set
+// cap of zero or a negative value disables the guardrail silently, so Load must
+// reject it. Omitting the key (no cap) stays valid.
+func TestPolicyLoadRejectsNonPositiveCaps(t *testing.T) {
+	bad := map[string]string{
+		"negative lots":     "max_lots_per_order = -1\n",
+		"zero lots":         "max_lots_per_order = 0\n",
+		"negative open":     "max_open_orders = -5\n",
+		"zero open":         "max_open_orders = 0\n",
+		"zero notional":     "max_notional_per_order = \"0\"\nnotional_currency = \"rub\"\n",
+		"negative notional": "max_notional_per_order = \"-100\"\nnotional_currency = \"rub\"\n",
+	}
+	for name, body := range bad {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Load(writePolicy(t, body)); err == nil {
+				t.Errorf("Load accepted a non-positive cap:\n%s", body)
+			}
+		})
+	}
+	// Omitting caps entirely is valid (no caps configured).
+	if _, err := Load(writePolicy(t, "allow_market_orders = true\n")); err != nil {
+		t.Errorf("Load rejected a capless policy: %v", err)
+	}
+}
+
+// TestNotionalCapFailsClosedOnMissingMetadata is the F12 regression: the notional
+// cap must fail closed (explicit violation) when the metadata it needs — the
+// instrument's currency or lot size — is missing, rather than skipping the check
+// or assuming a lot size of 1.
+func TestNotionalCapFailsClosedOnMissingMetadata(t *testing.T) {
+	p := &Policy{MaxNotionalPerOrder: "1000", NotionalCurrency: "rub"}
+	base := OrderIntent{
+		OrderType: investapi.OrderType_ORDER_TYPE_LIMIT,
+		Lots:      1, Price: &investapi.Quotation{Units: 1},
+		LotSize: 1, Currency: "rub", UID: "u", RawID: "u",
+	}
+	noCurrency := base
+	noCurrency.Currency = ""
+	if v := p.CheckResolved(noCurrency); v == nil {
+		t.Error("notional cap must fail closed when the instrument currency is unknown")
+	}
+	noLot := base
+	noLot.LotSize = 0
+	if v := p.CheckResolved(noLot); v == nil {
+		t.Error("notional cap must fail closed when the lot size is unknown")
+	}
+	if v := p.CheckResolved(base); v != nil {
+		t.Errorf("in-cap order with complete metadata blocked: %v", v)
+	}
+}

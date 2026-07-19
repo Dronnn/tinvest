@@ -153,8 +153,15 @@ func readFile(path string) (File, error) {
 	if err != nil {
 		return file, fmt.Errorf("read config: %w", err)
 	}
-	if err := toml.Unmarshal(data, &file); err != nil {
+	md, err := toml.Decode(string(data), &file)
+	if err != nil {
 		return file, fmt.Errorf("parse %s: %w", path, err)
+	}
+	// Strict decoding: a misspelled key (e.g. policy_fil instead of policy_file)
+	// would otherwise be silently dropped, disabling the guardrail it was meant to
+	// configure. Reject unknown keys, naming the offender (finding F11-config).
+	if undecoded := md.Undecoded(); len(undecoded) > 0 {
+		return file, fmt.Errorf("unknown key %q in %s", undecoded[0].String(), path)
 	}
 	return file, nil
 }

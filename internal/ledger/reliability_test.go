@@ -274,3 +274,102 @@ func TestMkdirAllSyncFsyncsCreatedLevels(t *testing.T) {
 		}
 	}
 }
+
+func beginEntry(t *testing.T, l *Ledger, intentID string) *Entry {
+	t.Helper()
+	e, err := l.Begin(Intent{
+		IntentID: intentID, Kind: "order.place", AccountID: "acc", Profile: "test",
+		Attempt: 1, OrderID: intentID, Payload: samplePayload{AccountID: "acc", OrderID: intentID},
+	})
+	if err != nil {
+		t.Fatalf("Begin %s: %v", intentID, err)
+	}
+	return e
+}
+
+// TestUnresolvedSurfacesInterleavedDanglingLifecycle is the F8 regression: two
+// concurrent lifecycles of one intent id — one crashed at send-started, the other
+// confirmed — must leave the id unresolved. Last-write-wins would hide the
+// dangling send behind the later confirmation.
+func TestUnresolvedSurfacesInterleavedDanglingLifecycle(t *testing.T) {
+	l := openTemp(t)
+
+	a := beginEntry(t, l, "dup") // lifecycle A
+	if err := a.SendStarted(); err != nil {
+		t.Fatal(err)
+	}
+	b := beginEntry(t, l, "dup") // lifecycle B, same id
+	if err := b.SendStarted(); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Confirmed(Result{OrderID: "exch-dup"}); err != nil {
+		t.Fatal(err)
+	}
+
+	un, err := l.Unresolved()
+	if err != nil {
+		t.Fatalf("Unresolved: %v", err)
+	}
+	if !hasID(intentIDs(un), "dup") {
+		t.Errorf("interleaved dangling lifecycle hidden: %v", intentIDs(un))
+	}
+
+	// A single, fully-confirmed lifecycle must NOT be reported unresolved.
+	c := beginEntry(t, l, "clean")
+	if err := c.SendStarted(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Confirmed(Result{OrderID: "exch-clean"}); err != nil {
+		t.Fatal(err)
+	}
+	un2, err := l.Unresolved()
+	if err != nil {
+		t.Fatalf("Unresolved: %v", err)
+	}
+	if hasID(intentIDs(un2), "clean") {
+		t.Errorf("a fully-confirmed single lifecycle must not be unresolved: %v", intentIDs(un2))
+	}
+}
+
+// TestRecoveryRepairsTornTailInOlderMonth is the F9 regression: a torn tail in an
+// OLDER month file must be repaired by the recovery scan, not abort every
+// reconciliation with a RecoveryError forever.
+func TestRecoveryRepairsTornTailInOlderMonth(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	now := time.Now().UTC()
+	firstOfThisMonth := time.Date(now.Year(), now.Month(), 1, 12, 0, 0, 0, time.UTC)
+	old := firstOfThisMonth.AddDate(0, -3, 0)
+	fixedClock(l, old)
+	beginEntry(t, l, "old-keep")
+	beginEntry(t, l, "old-torn")
+	_ = l.Close()
+
+	// Tear the tail of the OLD month file.
+	oldPath := filepath.Join(dir, old.Format(monthFmt)+".jsonl")
+	data, err := os.ReadFile(oldPath)
+	if err != nil {
+		t.Fatalf("read old journal: %v", err)
+	}
+	if err := os.WriteFile(oldPath, data[:len(data)-8], 0o600); err != nil {
+		t.Fatalf("truncate old journal: %v", err)
+	}
+
+	l2, err := Open(dir) // current month; does not touch the old file
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() { _ = l2.Close() }()
+
+	un, err := l2.Unresolved()
+	if err != nil {
+		t.Fatalf("recovery aborted on a torn tail in an older month: %v", err)
+	}
+	if !hasID(intentIDs(un), "old-keep") {
+		t.Errorf("intact older-month intent lost during recovery: %v", intentIDs(un))
+	}
+}

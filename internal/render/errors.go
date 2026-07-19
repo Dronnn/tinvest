@@ -151,21 +151,16 @@ type CallContext struct {
 // statuses always arrive with phase confirmed, so they are classified by code.
 func Classify(err error, cc CallContext) *CLIError {
 	st, ok := status.FromError(err)
-	if !ok {
-		return &CLIError{
-			Code:       CodeInternal,
-			Message:    err.Error(),
-			Phase:      cc.Phase.String(),
-			TrackingID: cc.TrackingID,
-		}
-	}
 
 	e := &CLIError{
-		GRPCCode:   grpcCodeName(st.Code()),
-		APICode:    apiCode(st.Message()),
-		Message:    st.Message(),
+		Message:    err.Error(),
 		Phase:      cc.Phase.String(),
 		TrackingID: cc.TrackingID,
+	}
+	if ok {
+		e.GRPCCode = grpcCodeName(st.Code())
+		e.APICode = apiCode(st.Message())
+		e.Message = st.Message()
 	}
 	if cc.APIMessage != "" {
 		// The broker sends the numeric code as the status message and the
@@ -173,8 +168,20 @@ func Classify(err error, cc CallContext) *CLIError {
 		e.Message = cc.APIMessage
 	}
 
+	// The phase rule wins before any code- or shape-based mapping: a mutation that
+	// reached the wire without a definitive answer is UNCONFIRMED (exit 7),
+	// whatever the error's shape. Retry backoff can surface a RAW context error
+	// (context.DeadlineExceeded/Canceled) that carries no gRPC status; it must not
+	// fall through to the !ok INTERNAL path and let a caller close the WAL as
+	// rejected while the send may have reached the broker (finding F2).
 	if cc.Mutation && cc.Phase == transport.PhaseSentUnconfirmed {
 		e.Code = CodeUnconfirmed
+		return e
+	}
+	if !ok {
+		// No gRPC status and not a sent-unconfirmed mutation (e.g. a read whose
+		// context expired, or a genuinely internal error).
+		e.Code = CodeInternal
 		return e
 	}
 	// 30057: "duplicate order, but the order report was not found." The broker
