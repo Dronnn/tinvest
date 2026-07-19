@@ -145,7 +145,7 @@ func (a *app) rootCmd() *cobra.Command {
 	root.AddCommand(
 		a.versionCmd(), a.tokenCmd(), a.accountsCmd(), a.userCmd(),
 		a.portfolioCmd(), a.positionsCmd(), a.balanceCmd(), a.operationsCmd(), a.tradesCmd(),
-		a.instrumentsCmd(), a.quotesCmd(), a.orderbookCmd(), a.candlesCmd(), a.signalsCmd(),
+		a.instrumentsCmd(), a.researchCmd(), a.quotesCmd(), a.orderbookCmd(), a.candlesCmd(), a.signalsCmd(),
 		a.ordersCmd(), a.stopOrdersCmd(), a.sandboxCmd(), a.streamCmd(),
 	)
 	return root

@@ -91,6 +91,7 @@ tinvest balance get     # withdraw limits summarized by currency
 tinvest operations list # cursor-paginated operations; --all follows every page
 tinvest trades list     # executed trades flattened from operations
 tinvest candles …       # auto-windowed candles / authenticated yearly zip download
+tinvest research …      # news / fundamentals / forecasts / insider deals
 tinvest user …          # tariff limits / account margin attributes
 tinvest signals …       # signal strategies / signals
 tinvest orders …        # place / list / cancel / replace / wait / reconcile
@@ -233,6 +234,11 @@ tinvest instruments coupons <bond-uid> --from 2026-01-01T00:00:00Z --to 2027-01-
 tinvest instruments accrued-interest <bond-uid> --from 2026-01-01T00:00:00Z --to 2026-02-01T00:00:00Z
 tinvest instruments schedules --exchange MOEX --from 2026-01-01T00:00:00Z --to 2026-01-08T00:00:00Z
 tinvest instruments trading-status SBER@TQBR
+tinvest research news --limit 100 [--cursor <news-id>]
+tinvest research fundamentals --asset <asset-uid> [--instrument SBER@TQBR]
+tinvest research forecast --instrument SBER@TQBR
+tinvest research consensus --page-number 0 --limit 100
+tinvest research insider-deals --instrument SBER@TQBR --limit 100 [--cursor <next-cursor>]
 tinvest candles get SBER@TQBR --interval 1h --from 2026-01-01T00:00:00Z --to 2026-07-01T00:00:00Z
 tinvest candles download SBER@TQBR --year 2025 --out ./history
 tinvest user tariff

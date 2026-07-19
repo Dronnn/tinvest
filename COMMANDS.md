@@ -26,6 +26,7 @@ Available Commands:
   portfolio   Portfolio totals and holdings
   positions   Account positions and blocked quantities
   quotes      Market quotes
+  research    News, fundamentals, forecasts, and insider activity
   sandbox     Manage sandbox accounts (always targets the sandbox endpoint)
   signals     Analyst and technical signals
   stop-orders Place, list, cancel, and reconcile stop orders (take-profit, stop-loss, stop-limit)
@@ -940,6 +941,154 @@ Usage:
 Flags:
   -h, --help       help for last
       --no-cache   bypass the local instrument cache
+
+Global Flags:
+      --account string      account id for account-scoped commands
+      --no-rate-limit       disable client-side unary rate limiting
+  -o, --output string       output format: json or table (env TINVEST_OUTPUT)
+      --profile string      config profile name (env TINVEST_PROFILE)
+      --sandbox             shortcut: use the sandbox endpoint
+      --timeout duration    per-call deadline (default 10s)
+      --token-file string   file containing the API token (overrides TINVEST_TOKEN)
+```
+
+## tinvest research
+
+```
+News, fundamentals, forecasts, and insider activity
+
+Usage:
+  tinvest research [command]
+
+Available Commands:
+  consensus     Get one page of instrument consensus forecasts
+  forecast      Get investment-house forecasts for one instrument
+  fundamentals  Get fundamentals for asset UIDs or resolved instruments
+  insider-deals Get one page of insider deals for one instrument
+  news          Get one page of current news
+
+Flags:
+  -h, --help   help for research
+
+Global Flags:
+      --account string      account id for account-scoped commands
+      --no-rate-limit       disable client-side unary rate limiting
+  -o, --output string       output format: json or table (env TINVEST_OUTPUT)
+      --profile string      config profile name (env TINVEST_PROFILE)
+      --sandbox             shortcut: use the sandbox endpoint
+      --timeout duration    per-call deadline (default 10s)
+      --token-file string   file containing the API token (overrides TINVEST_TOKEN)
+
+Use "tinvest research [command] --help" for more information about a command.
+```
+
+### tinvest research consensus
+
+```
+Get one page of instrument consensus forecasts
+
+Usage:
+  tinvest research consensus [flags]
+
+Flags:
+  -h, --help                help for consensus
+      --limit int32         consensus forecasts per page (default 100)
+      --page-number int32   zero-based page number
+
+Global Flags:
+      --account string      account id for account-scoped commands
+      --no-rate-limit       disable client-side unary rate limiting
+  -o, --output string       output format: json or table (env TINVEST_OUTPUT)
+      --profile string      config profile name (env TINVEST_PROFILE)
+      --sandbox             shortcut: use the sandbox endpoint
+      --timeout duration    per-call deadline (default 10s)
+      --token-file string   file containing the API token (overrides TINVEST_TOKEN)
+```
+
+### tinvest research forecast
+
+```
+Get investment-house forecasts for one instrument
+
+Usage:
+  tinvest research forecast [flags]
+
+Flags:
+  -h, --help                help for forecast
+      --instrument string   instrument id: UID, FIGI, or TICKER@CLASSCODE (required)
+      --no-cache            bypass the local instrument cache
+
+Global Flags:
+      --account string      account id for account-scoped commands
+      --no-rate-limit       disable client-side unary rate limiting
+  -o, --output string       output format: json or table (env TINVEST_OUTPUT)
+      --profile string      config profile name (env TINVEST_PROFILE)
+      --sandbox             shortcut: use the sandbox endpoint
+      --timeout duration    per-call deadline (default 10s)
+      --token-file string   file containing the API token (overrides TINVEST_TOKEN)
+```
+
+### tinvest research fundamentals
+
+```
+Get fundamentals for asset UIDs or resolved instruments
+
+Usage:
+  tinvest research fundamentals [flags]
+
+Flags:
+      --asset stringArray        asset UID (repeatable)
+  -h, --help                     help for fundamentals
+      --instrument stringArray   instrument id resolved to asset UID (repeatable: UID, FIGI, or TICKER@CLASSCODE)
+      --no-cache                 bypass the local instrument cache
+
+Global Flags:
+      --account string      account id for account-scoped commands
+      --no-rate-limit       disable client-side unary rate limiting
+  -o, --output string       output format: json or table (env TINVEST_OUTPUT)
+      --profile string      config profile name (env TINVEST_PROFILE)
+      --sandbox             shortcut: use the sandbox endpoint
+      --timeout duration    per-call deadline (default 10s)
+      --token-file string   file containing the API token (overrides TINVEST_TOKEN)
+```
+
+### tinvest research insider-deals
+
+```
+Get one page of insider deals for one instrument
+
+Usage:
+  tinvest research insider-deals [flags]
+
+Flags:
+      --cursor string       cursor from a previous response
+  -h, --help                help for insider-deals
+      --instrument string   instrument id: UID, FIGI, or TICKER@CLASSCODE (required)
+      --limit int32         insider deals per page (1 through 100) (default 100)
+      --no-cache            bypass the local instrument cache
+
+Global Flags:
+      --account string      account id for account-scoped commands
+      --no-rate-limit       disable client-side unary rate limiting
+  -o, --output string       output format: json or table (env TINVEST_OUTPUT)
+      --profile string      config profile name (env TINVEST_PROFILE)
+      --sandbox             shortcut: use the sandbox endpoint
+      --timeout duration    per-call deadline (default 10s)
+      --token-file string   file containing the API token (overrides TINVEST_TOKEN)
+```
+
+### tinvest research news
+
+```
+Get one page of current news
+
+Usage:
+  tinvest research news [flags]
+
+Flags:
+      --cursor int    cursor from a previous response
+  -h, --help          help for news
+      --limit int32   news items per page (default 1000)
 
 Global Flags:
       --account string      account id for account-scoped commands
