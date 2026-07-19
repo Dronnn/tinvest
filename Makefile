@@ -13,13 +13,23 @@ BUF := go run github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
 
 .DEFAULT_GOAL := build
 
-.PHONY: build test vet lint proto proto-lint tidy clean
+.PHONY: build test test-live lint-live vet lint proto proto-lint tidy clean
 
 build:
 	go build ./...
 
 test:
 	go test ./...
+
+# Live sandbox integration suite (test/e2e-live, build tag e2elive).
+# Opt-in: needs TINVEST_TOKEN; talks to the real T-Invest sandbox only.
+# Not part of `test` or CI. See test/e2e-live/README.md.
+test-live:
+	go test -tags e2elive -race -count=1 ./test/e2e-live/...
+
+# The default lint run does not compile e2elive-tagged files; lint them here.
+lint-live:
+	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run --build-tags e2elive ./test/e2e-live/...
 
 vet:
 	go vet ./...

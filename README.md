@@ -48,6 +48,10 @@ make lint      # golangci-lint via pinned go run
 make proto     # regenerate gRPC stubs from vendored protos
 ```
 
+An opt-in live-integration suite against the real T-Invest sandbox lives in
+`test/e2e-live/` (build tag `e2elive`; requires `TINVEST_TOKEN`; never touches
+production): `make test-live`. See `test/e2e-live/README.md`.
+
 ## Install from a release
 
 Download the archive for your OS and architecture plus `checksums.txt` from
