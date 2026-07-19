@@ -177,6 +177,16 @@ func Classify(err error, cc CallContext) *CLIError {
 		e.Code = CodeUnconfirmed
 		return e
 	}
+	// 30057: "duplicate order, but the order report was not found." The broker
+	// recognized our order_id (an idempotent retry) but cannot return the placed
+	// order's report, so the original order may well exist. On a mutation this
+	// must NOT be a plain rejection — that would tempt a caller to place a
+	// replacement and duplicate. Classify it UNCONFIRMED (exit 7) so the caller
+	// reconciles against the broker before any retry (plan §9).
+	if cc.Mutation && e.APICode == "30057" {
+		e.Code = CodeUnconfirmed
+		return e
+	}
 	if e.APICode == "40003" { // invalid token, regardless of transport code
 		e.Code = CodeAuth
 		return e

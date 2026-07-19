@@ -240,6 +240,36 @@ func TestOrdersReconcileLeavesLegacyEndpointlessIntentIndeterminate(t *testing.T
 	}
 }
 
+// TestPlace30057DuplicateReportNotFoundStaysUnresolved: when PostOrder returns
+// error 30057 (duplicate order, original report missing), the intent must NOT be
+// closed as rejected — the order may exist. placeExec must surface exit 7 with a
+// reconcile hint and leave the intent unresolved so reconcile resolves it without
+// placing a duplicate.
+func TestPlace30057DuplicateReportNotFoundStaysUnresolved(t *testing.T) {
+	fake := &fakeOrders{postErr: status.Error(codes.InvalidArgument, "30057")}
+	conn := newOrdersConn(t, fake)
+	led := testLedger(t)
+
+	intent, params := placeIntent("order-dup")
+	_, cerr := placeExec(context.Background(), orders.New(conn), led, intent, params, false)
+	if cerr == nil {
+		t.Fatal("want an error for 30057")
+	}
+	if cerr.Code != render.CodeUnconfirmed || cerr.ExitCode() != render.ExitUnconfirmed {
+		t.Fatalf("code = %s exit = %d, want UNCONFIRMED / 7", cerr.Code, cerr.ExitCode())
+	}
+	if cerr.ReconcileHint == nil || cerr.ReconcileHint.OrderID != "order-dup" {
+		t.Fatalf("want a reconcile hint carrying the order_id, got %+v", cerr.ReconcileHint)
+	}
+	unresolved, err := led.Unresolved()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unresolved) != 1 || unresolved[0].IntentID() != "order-dup" {
+		t.Fatalf("30057 intent must remain unresolved (not rejected), got %d entries", len(unresolved))
+	}
+}
+
 // TestAsyncReconcileNeverClosesNotPlacedOnNotFound: a PostOrderAsync intent that
 // reads NOT_FOUND from GetOrderState must never be closed as not-placed. It is
 // resolved from the day's order list by order_request_id, or left unresolved for

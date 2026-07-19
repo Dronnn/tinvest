@@ -131,6 +131,38 @@ func TestClassifyExitCodes(t *testing.T) {
 	}
 }
 
+// TestClassify30057DuplicateReportNotFoundDemandsReconcile: API code 30057
+// ("duplicate order, but the order report was not found") fires in the
+// idempotent-retry path when the broker recognizes our order_id but cannot
+// return the original report — the order may exist. On a mutation it must
+// classify UNCONFIRMED (exit 7), never a plain rejection that would invite a
+// duplicate. It arrives like other broker codes: the numeric code as the status
+// message, the human text in the "message" trailer (APIMessage).
+func TestClassify30057DuplicateReportNotFoundDemandsReconcile(t *testing.T) {
+	err := status.Error(codes.InvalidArgument, "30057")
+
+	mut := Classify(err, CallContext{
+		Phase:      transport.PhaseConfirmed,
+		Mutation:   true,
+		APIMessage: "The order is a duplicate, but the order report was not found",
+	})
+	if mut.Code != CodeUnconfirmed {
+		t.Errorf("mutation 30057 code = %s, want UNCONFIRMED", mut.Code)
+	}
+	if mut.ExitCode() != ExitUnconfirmed {
+		t.Errorf("mutation 30057 exit = %d, want %d", mut.ExitCode(), ExitUnconfirmed)
+	}
+	if mut.APICode != "30057" {
+		t.Errorf("api code = %q, want 30057", mut.APICode)
+	}
+
+	// A non-mutation call is not subject to the duplicate-order case.
+	read := Classify(err, CallContext{Phase: transport.PhaseConfirmed})
+	if read.Code != CodeBrokerRejected {
+		t.Errorf("non-mutation 30057 code = %s, want BROKER_REJECTED", read.Code)
+	}
+}
+
 func TestClassifyDetails(t *testing.T) {
 	err := status.Error(codes.ResourceExhausted, "80002")
 	got := Classify(err, CallContext{
