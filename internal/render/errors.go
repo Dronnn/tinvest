@@ -6,7 +6,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"tinvest/internal/transport"
+	"github.com/Dronnn/tinvest/internal/transport"
 )
 
 // Code is the stable CLI-level error classification (plan §7).

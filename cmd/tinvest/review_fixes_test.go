@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	investapi "tinvest/internal/pb/investapi"
-	"tinvest/internal/policy"
-	"tinvest/internal/render"
+	"github.com/Dronnn/tinvest/internal/policy"
+	"github.com/Dronnn/tinvest/internal/render"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 const testUUID = "00000000-0000-4000-8000-000000000001"

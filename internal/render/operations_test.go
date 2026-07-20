@@ -8,7 +8,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 func TestOperationsAndExecutedTradesViews(t *testing.T) {

@@ -9,12 +9,12 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 
-	brokerstream "tinvest/internal/broker/streaming"
-	"tinvest/internal/config"
-	investapi "tinvest/internal/pb/investapi"
-	"tinvest/internal/render"
-	streamrunner "tinvest/internal/stream"
-	"tinvest/internal/transport"
+	brokerstream "github.com/Dronnn/tinvest/internal/broker/streaming"
+	"github.com/Dronnn/tinvest/internal/config"
+	"github.com/Dronnn/tinvest/internal/render"
+	streamrunner "github.com/Dronnn/tinvest/internal/stream"
+	"github.com/Dronnn/tinvest/internal/transport"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 func (a *app) streamCmd() *cobra.Command {

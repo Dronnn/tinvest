@@ -1,6 +1,6 @@
 package orders
 
-import investapi "tinvest/internal/pb/investapi"
+import investapi "github.com/Dronnn/tinvest/pb/investapi"
 
 // Lifecycle is the CLI's stable, machine-facing name for an order's execution
 // state (plan §9). The contract's OrderExecutionReportStatus enum is the

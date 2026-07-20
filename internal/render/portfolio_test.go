@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 func TestBalanceSummarizesMoneyByCurrency(t *testing.T) {

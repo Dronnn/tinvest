@@ -1595,9 +1595,9 @@ const file_users_proto_rawDesc = "" +
 	"\x0fGetBankAccounts\x12=.tinkoff.public.invest.api.contract.v1.GetBankAccountsRequest\x1a>.tinkoff.public.invest.api.contract.v1.GetBankAccountsResponse\x12\x93\x01\n" +
 	"\x10CurrencyTransfer\x12>.tinkoff.public.invest.api.contract.v1.CurrencyTransferRequest\x1a?.tinkoff.public.invest.api.contract.v1.CurrencyTransferResponse\x12r\n" +
 	"\x05PayIn\x123.tinkoff.public.invest.api.contract.v1.PayInRequest\x1a4.tinkoff.public.invest.api.contract.v1.PayInResponse\x12\x93\x01\n" +
-	"\x10GetAccountValues\x12>.tinkoff.public.invest.api.contract.v1.GetAccountValuesRequest\x1a?.tinkoff.public.invest.api.contract.v1.GetAccountValuesResponseB\x9d\x02\n" +
+	"\x10GetAccountValues\x12>.tinkoff.public.invest.api.contract.v1.GetAccountValuesRequest\x1a?.tinkoff.public.invest.api.contract.v1.GetAccountValuesResponseB\xa6\x02\n" +
 	")com.tinkoff.public.invest.api.contract.v1B\n" +
-	"UsersProtoP\x01Z'tinvest/internal/pb/investapi;investapi\xa2\x02\x05TPIAC\xaa\x02%Tinkoff.Public.Invest.Api.Contract.V1\xca\x02&Tinkoff\\Public_\\Invest\\Api\\Contract\\V1\xe2\x022Tinkoff\\Public_\\Invest\\Api\\Contract\\V1\\GPBMetadata\xea\x02*Tinkoff::Public::Invest::Api::Contract::V1b\x06proto3"
+	"UsersProtoP\x01Z0github.com/Dronnn/tinvest/pb/investapi;investapi\xa2\x02\x05TPIAC\xaa\x02%Tinkoff.Public.Invest.Api.Contract.V1\xca\x02&Tinkoff\\Public_\\Invest\\Api\\Contract\\V1\xe2\x022Tinkoff\\Public_\\Invest\\Api\\Contract\\V1\\GPBMetadata\xea\x02*Tinkoff::Public::Invest::Api::Contract::V1b\x06proto3"
 
 var (
 	file_users_proto_rawDescOnce sync.Once

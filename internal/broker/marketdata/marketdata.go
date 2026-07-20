@@ -12,7 +12,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // Client is a thin typed wrapper over the market-data calls.
@@ -122,6 +122,13 @@ func (cap candleRangeCap) advance(value time.Time) time.Time {
 
 func candleCap(interval investapi.CandleInterval) (candleRangeCap, error) {
 	switch interval {
+	case investapi.CandleInterval_CANDLE_INTERVAL_5_SEC,
+		investapi.CandleInterval_CANDLE_INTERVAL_10_SEC:
+		// proto/marketdata.proto: 5s and 10s candles span up to 200 minutes.
+		return candleRangeCap{duration: 200 * time.Minute}, nil
+	case investapi.CandleInterval_CANDLE_INTERVAL_30_SEC:
+		// proto/marketdata.proto: 30s candles span up to 20 hours.
+		return candleRangeCap{duration: 20 * time.Hour}, nil
 	case investapi.CandleInterval_CANDLE_INTERVAL_1_MIN,
 		investapi.CandleInterval_CANDLE_INTERVAL_2_MIN,
 		investapi.CandleInterval_CANDLE_INTERVAL_3_MIN:

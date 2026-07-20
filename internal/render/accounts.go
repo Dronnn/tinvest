@@ -3,7 +3,7 @@ package render
 import (
 	"io"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // AccountView is the JSON shape of one brokerage account. Enums keep their

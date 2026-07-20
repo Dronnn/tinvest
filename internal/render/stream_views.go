@@ -9,8 +9,8 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
-	investapi "tinvest/internal/pb/investapi"
-	streamrunner "tinvest/internal/stream"
+	streamrunner "github.com/Dronnn/tinvest/internal/stream"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 type LifecycleView struct {

@@ -4,7 +4,7 @@ import (
 	"io"
 	"strconv"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // InstrumentView is the JSON shape of a resolved instrument (plan §5/§8).

@@ -3,7 +3,7 @@ package stoporders
 import (
 	"fmt"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // Direction parses the CLI direction flag into the contract enum.

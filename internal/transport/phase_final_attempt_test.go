@@ -11,8 +11,8 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	investapi "tinvest/internal/pb/investapi"
-	"tinvest/internal/transport/retry"
+	"github.com/Dronnn/tinvest/internal/transport/retry"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // TestPhaseReflectsFinalAttemptNotHighWaterMark is the F1 regression: across

@@ -15,7 +15,7 @@ import (
 	"strings"
 	"testing"
 
-	"tinvest/internal/config"
+	"github.com/Dronnn/tinvest/internal/config"
 )
 
 // requireLive skips a test cleanly when no sandbox token is configured, so a

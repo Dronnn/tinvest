@@ -8,12 +8,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"tinvest/internal/broker/sandbox"
-	"tinvest/internal/config"
-	investapi "tinvest/internal/pb/investapi"
-	"tinvest/internal/policy"
-	"tinvest/internal/render"
-	"tinvest/internal/transport"
+	"github.com/Dronnn/tinvest/internal/broker/sandbox"
+	"github.com/Dronnn/tinvest/internal/config"
+	"github.com/Dronnn/tinvest/internal/policy"
+	"github.com/Dronnn/tinvest/internal/render"
+	"github.com/Dronnn/tinvest/internal/transport"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 func (a *app) sandboxCmd() *cobra.Command {

@@ -17,15 +17,15 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	brokerinstruments "tinvest/internal/broker/instruments"
-	"tinvest/internal/broker/orders"
-	"tinvest/internal/config"
-	"tinvest/internal/ledger"
-	investapi "tinvest/internal/pb/investapi"
-	"tinvest/internal/policy"
-	"tinvest/internal/render"
-	"tinvest/internal/transport"
-	"tinvest/internal/transport/retry"
+	brokerinstruments "github.com/Dronnn/tinvest/internal/broker/instruments"
+	"github.com/Dronnn/tinvest/internal/broker/orders"
+	"github.com/Dronnn/tinvest/internal/config"
+	"github.com/Dronnn/tinvest/internal/ledger"
+	"github.com/Dronnn/tinvest/internal/policy"
+	"github.com/Dronnn/tinvest/internal/render"
+	"github.com/Dronnn/tinvest/internal/transport"
+	"github.com/Dronnn/tinvest/internal/transport/retry"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // Ledger intent kinds (plan §10).

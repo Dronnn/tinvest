@@ -10,10 +10,10 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
-	investapi "tinvest/internal/pb/investapi"
-	"tinvest/internal/ratelimit"
-	"tinvest/internal/render"
-	"tinvest/internal/transport"
+	"github.com/Dronnn/tinvest/internal/ratelimit"
+	"github.com/Dronnn/tinvest/internal/render"
+	"github.com/Dronnn/tinvest/internal/transport"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 const getAccountsMethod = "/tinkoff.public.invest.api.contract.v1.UsersService/GetAccounts"

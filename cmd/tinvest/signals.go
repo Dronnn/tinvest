@@ -6,9 +6,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	brokersignals "tinvest/internal/broker/signals"
-	"tinvest/internal/render"
-	"tinvest/internal/transport"
+	brokersignals "github.com/Dronnn/tinvest/internal/broker/signals"
+	"github.com/Dronnn/tinvest/internal/render"
+	"github.com/Dronnn/tinvest/internal/transport"
 )
 
 type signalStrategiesData struct {

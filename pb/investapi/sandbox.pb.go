@@ -332,8 +332,8 @@ const file_sandbox_proto_rawDesc = "" +
 	"\x11GetSandboxMaxLots\x128.tinkoff.public.invest.api.contract.v1.GetMaxLotsRequest\x1a9.tinkoff.public.invest.api.contract.v1.GetMaxLotsResponse\x12\x91\x01\n" +
 	"\x14PostSandboxStopOrder\x12;.tinkoff.public.invest.api.contract.v1.PostStopOrderRequest\x1a<.tinkoff.public.invest.api.contract.v1.PostStopOrderResponse\x12\x91\x01\n" +
 	"\x14GetSandboxStopOrders\x12;.tinkoff.public.invest.api.contract.v1.GetStopOrdersRequest\x1a<.tinkoff.public.invest.api.contract.v1.GetStopOrdersResponse\x12\x97\x01\n" +
-	"\x16CancelSandboxStopOrder\x12=.tinkoff.public.invest.api.contract.v1.CancelStopOrderRequest\x1a>.tinkoff.public.invest.api.contract.v1.CancelStopOrderResponseB\x9f\x02\n" +
-	")com.tinkoff.public.invest.api.contract.v1B\fSandboxProtoP\x01Z'tinvest/internal/pb/investapi;investapi\xa2\x02\x05TPIAC\xaa\x02%Tinkoff.Public.Invest.Api.Contract.V1\xca\x02&Tinkoff\\Public_\\Invest\\Api\\Contract\\V1\xe2\x022Tinkoff\\Public_\\Invest\\Api\\Contract\\V1\\GPBMetadata\xea\x02*Tinkoff::Public::Invest::Api::Contract::V1b\x06proto3"
+	"\x16CancelSandboxStopOrder\x12=.tinkoff.public.invest.api.contract.v1.CancelStopOrderRequest\x1a>.tinkoff.public.invest.api.contract.v1.CancelStopOrderResponseB\xa8\x02\n" +
+	")com.tinkoff.public.invest.api.contract.v1B\fSandboxProtoP\x01Z0github.com/Dronnn/tinvest/pb/investapi;investapi\xa2\x02\x05TPIAC\xaa\x02%Tinkoff.Public.Invest.Api.Contract.V1\xca\x02&Tinkoff\\Public_\\Invest\\Api\\Contract\\V1\xe2\x022Tinkoff\\Public_\\Invest\\Api\\Contract\\V1\\GPBMetadata\xea\x02*Tinkoff::Public::Invest::Api::Contract::V1b\x06proto3"
 
 var (
 	file_sandbox_proto_rawDescOnce sync.Once

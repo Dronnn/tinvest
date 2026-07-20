@@ -6,10 +6,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	brokeroperations "tinvest/internal/broker/operations"
-	investapi "tinvest/internal/pb/investapi"
-	"tinvest/internal/render"
-	"tinvest/internal/transport"
+	brokeroperations "github.com/Dronnn/tinvest/internal/broker/operations"
+	"github.com/Dronnn/tinvest/internal/render"
+	"github.com/Dronnn/tinvest/internal/transport"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 type operationsListData struct {

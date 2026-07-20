@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 func TestDecimalString(t *testing.T) {

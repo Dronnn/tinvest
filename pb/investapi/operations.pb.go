@@ -5410,8 +5410,8 @@ const file_operations_proto_rawDesc = "" +
 	"\x17OperationsStreamService\x12\x92\x01\n" +
 	"\x0fPortfolioStream\x12=.tinkoff.public.invest.api.contract.v1.PortfolioStreamRequest\x1a>.tinkoff.public.invest.api.contract.v1.PortfolioStreamResponse0\x01\x12\x92\x01\n" +
 	"\x0fPositionsStream\x12=.tinkoff.public.invest.api.contract.v1.PositionsStreamRequest\x1a>.tinkoff.public.invest.api.contract.v1.PositionsStreamResponse0\x01\x12\x95\x01\n" +
-	"\x10OperationsStream\x12>.tinkoff.public.invest.api.contract.v1.OperationsStreamRequest\x1a?.tinkoff.public.invest.api.contract.v1.OperationsStreamResponse0\x01B\xa2\x02\n" +
-	")com.tinkoff.public.invest.api.contract.v1B\x0fOperationsProtoP\x01Z'tinvest/internal/pb/investapi;investapi\xa2\x02\x05TPIAC\xaa\x02%Tinkoff.Public.Invest.Api.Contract.V1\xca\x02&Tinkoff\\Public_\\Invest\\Api\\Contract\\V1\xe2\x022Tinkoff\\Public_\\Invest\\Api\\Contract\\V1\\GPBMetadata\xea\x02*Tinkoff::Public::Invest::Api::Contract::V1b\x06proto3"
+	"\x10OperationsStream\x12>.tinkoff.public.invest.api.contract.v1.OperationsStreamRequest\x1a?.tinkoff.public.invest.api.contract.v1.OperationsStreamResponse0\x01B\xab\x02\n" +
+	")com.tinkoff.public.invest.api.contract.v1B\x0fOperationsProtoP\x01Z0github.com/Dronnn/tinvest/pb/investapi;investapi\xa2\x02\x05TPIAC\xaa\x02%Tinkoff.Public.Invest.Api.Contract.V1\xca\x02&Tinkoff\\Public_\\Invest\\Api\\Contract\\V1\xe2\x022Tinkoff\\Public_\\Invest\\Api\\Contract\\V1\\GPBMetadata\xea\x02*Tinkoff::Public::Invest::Api::Contract::V1b\x06proto3"
 
 var (
 	file_operations_proto_rawDescOnce sync.Once

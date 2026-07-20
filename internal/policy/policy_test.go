@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 func limitIntent(lots int64, priceUnits int64) OrderIntent {

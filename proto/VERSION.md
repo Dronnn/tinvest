@@ -2,7 +2,7 @@
 
 These `.proto` files are vendored verbatim from T-Bank's contract repository.
 Do not edit them by hand. The generated Go stubs live in
-`internal/pb/investapi/` and are regenerated with `make proto`.
+`pb/investapi/` and are regenerated with `make proto`.
 
 ## Pinned source
 
@@ -38,7 +38,7 @@ curl "https://opensource.tbank.ru/api/v4/projects/invest%2Finvest-contracts/repo
 | `google/api/field_behavior.proto` | Vendored dependency imported by the contracts |
 
 The upstream `option go_package` is `"./;investapi"`. Codegen (buf managed
-mode, see `buf.gen.yaml`) overrides it to `tinvest/internal/pb/investapi` with
+mode, see `buf.gen.yaml`) overrides it to `github.com/Dronnn/tinvest/pb/investapi` with
 Go package name `investapi`; `google/api/field_behavior.proto` is folded into
 that same package so the tree has no external annotation dependency.
 

@@ -25,8 +25,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	investapi "tinvest/internal/pb/investapi"
-	"tinvest/internal/render"
+	"github.com/Dronnn/tinvest/internal/render"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // Policy is the resolved set of guardrails for one profile. The zero value is

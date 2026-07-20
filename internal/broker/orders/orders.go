@@ -12,7 +12,7 @@ import (
 
 	"google.golang.org/grpc"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // Client is a thin typed wrapper over OrdersService.

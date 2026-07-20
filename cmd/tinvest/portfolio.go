@@ -6,9 +6,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	brokerportfolio "tinvest/internal/broker/portfolio"
-	"tinvest/internal/render"
-	"tinvest/internal/transport"
+	brokerportfolio "github.com/Dronnn/tinvest/internal/broker/portfolio"
+	"github.com/Dronnn/tinvest/internal/render"
+	"github.com/Dronnn/tinvest/internal/transport"
 )
 
 type portfolioGetData struct {

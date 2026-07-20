@@ -305,6 +305,86 @@ policy_file = "~/.config/tinvest/policy.toml"   # optional pre-trade guardrails
 
 Token resolution order: `--token-file` flag, then `TINVEST_TOKEN`, then the profile's `token_file`.
 
+## Use as a Go library
+
+The read-only surface of the CLI is also available as an importable package. It
+wraps the same broker and transport layers over one shared gRPC connection with
+the identical interceptor stack — Bearer auth, per-call deadlines, the
+idempotency-aware retry policy, client-side rate limiting, and tracking-id
+capture.
+
+```sh
+go get github.com/Dronnn/tinvest@latest
+```
+
+The library surface was introduced after `v1.1.0`, so the first importable tag
+is the next release; until then, pin the module to a local checkout with a
+`replace` directive in the consumer's `go.mod`:
+
+```
+require github.com/Dronnn/tinvest v0.0.0
+
+replace github.com/Dronnn/tinvest => ../invest
+```
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/Dronnn/tinvest"
+)
+
+func main() {
+	ctx := context.Background()
+
+	client, err := tinvest.New(ctx, tinvest.Config{Token: "t.your_token_here"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer client.Close()
+
+	// Identifiers accept an instrument_uid, a FIGI, or a TICKER@CLASSCODE pair.
+	inst, err := client.Resolve(ctx, "SBER@TQBR")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	prices, err := client.LastPrices(ctx, inst.GetUid())
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, p := range prices {
+		fmt.Printf("%s: %s\n", inst.GetTicker(), tinvest.QuotationString(p.GetPrice()))
+	}
+}
+```
+
+Methods cover instrument resolution and search, per-type instrument lists,
+last/close prices, order books, candles (with the CLI's automatic range
+windowing), trading status, dividends, coupons, accrued interest, trading
+schedules, and the research surface (news, fundamentals, forecasts, consensus,
+insider deals). They return the generated protobuf types from
+`github.com/Dronnn/tinvest/pb/investapi` or small result structs; use
+`tinvest.QuotationString` and `tinvest.MoneyString` to render `Quotation`/
+`MoneyValue` as exact decimal strings. Broker failures are returned as
+`*tinvest.APIError`, which exposes the gRPC status code and the broker's
+`x-tracking-id` (via `errors.As`).
+
+The `tinvest.Client` surface is intentionally **read-only**: order placement,
+stop orders, sandbox mutations, streaming, and the intent ledger are not exposed
+by `Client` and remain CLI-only by design. That guarantee covers `Client` only —
+the generated `github.com/Dronnn/tinvest/pb/investapi` package is the full gRPC
+contract and exports the raw service clients, including mutating RPCs; calling
+those directly bypasses this project's guardrails and is at your own risk.
+
+Importing the library does not pull the CLI framework into your build: `cobra`
+and `pflag` stay in the module for the `tinvest` command but are not linked into
+consumers of the `github.com/Dronnn/tinvest` package.
+
 ## License
 
 Licensed under the Apache License, Version 2.0. Copyright 2026 Andreas Maier.

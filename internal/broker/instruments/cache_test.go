@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 func testInstrument(uid string) *investapi.Instrument {
@@ -16,6 +16,32 @@ func testInstrument(uid string) *investapi.Instrument {
 type fakeClock struct{ now time.Time }
 
 func (c *fakeClock) Now() time.Time { return c.now }
+
+// TestDefaultCachePathIgnoresRelativeXDGCacheHome pins the XDG rule: an
+// absolute XDG_CACHE_HOME is honored, while a relative (or empty) value is
+// invalid per the spec and falls back to ~/.cache instead of being used
+// verbatim.
+func TestDefaultCachePathIgnoresRelativeXDGCacheHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	fallback := filepath.Join(home, ".cache", "tinvest", "instruments.json")
+
+	abs := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", abs)
+	if got, want := DefaultCachePath(), filepath.Join(abs, "tinvest", "instruments.json"); got != want {
+		t.Errorf("absolute XDG_CACHE_HOME: path = %q, want %q", got, want)
+	}
+
+	t.Setenv("XDG_CACHE_HOME", "relative/cache")
+	if got := DefaultCachePath(); got != fallback {
+		t.Errorf("relative XDG_CACHE_HOME: path = %q, want fallback %q", got, fallback)
+	}
+
+	t.Setenv("XDG_CACHE_HOME", "")
+	if got := DefaultCachePath(); got != fallback {
+		t.Errorf("empty XDG_CACHE_HOME: path = %q, want fallback %q", got, fallback)
+	}
+}
 
 func TestCacheHit(t *testing.T) {
 	clock := &fakeClock{now: time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)}

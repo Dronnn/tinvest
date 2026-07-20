@@ -9,9 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	brokerresearch "tinvest/internal/broker/research"
-	"tinvest/internal/render"
-	"tinvest/internal/transport"
+	brokerresearch "github.com/Dronnn/tinvest/internal/broker/research"
+	"github.com/Dronnn/tinvest/internal/render"
+	"github.com/Dronnn/tinvest/internal/transport"
 )
 
 type researchNewsData struct {

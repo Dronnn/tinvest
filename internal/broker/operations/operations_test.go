@@ -13,9 +13,9 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
-	investapi "tinvest/internal/pb/investapi"
-	"tinvest/internal/render"
-	"tinvest/internal/transport"
+	"github.com/Dronnn/tinvest/internal/render"
+	"github.com/Dronnn/tinvest/internal/transport"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 type fakeOperations struct {

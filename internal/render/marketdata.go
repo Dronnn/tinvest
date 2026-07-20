@@ -4,7 +4,7 @@ import (
 	"io"
 	"strconv"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // LastPriceView is the JSON shape of one `quotes last` row. The broker's

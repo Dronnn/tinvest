@@ -6,9 +6,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"tinvest/internal/broker/marketdata"
-	"tinvest/internal/render"
-	"tinvest/internal/transport"
+	"github.com/Dronnn/tinvest/internal/broker/marketdata"
+	"github.com/Dronnn/tinvest/internal/render"
+	"github.com/Dronnn/tinvest/internal/transport"
 )
 
 type orderbookGetData struct {

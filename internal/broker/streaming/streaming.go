@@ -9,9 +9,9 @@ import (
 
 	"google.golang.org/grpc"
 
-	"tinvest/internal/broker/marketdata"
-	investapi "tinvest/internal/pb/investapi"
-	streamrunner "tinvest/internal/stream"
+	"github.com/Dronnn/tinvest/internal/broker/marketdata"
+	streamrunner "github.com/Dronnn/tinvest/internal/stream"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 const (

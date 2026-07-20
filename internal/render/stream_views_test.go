@@ -6,7 +6,7 @@ import (
 
 	"google.golang.org/protobuf/encoding/protowire"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 func TestMarketDataStreamCandleUsesStableNumericAndTimeShapes(t *testing.T) {

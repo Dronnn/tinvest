@@ -9,10 +9,10 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 
-	brokerinstruments "tinvest/internal/broker/instruments"
-	investapi "tinvest/internal/pb/investapi"
-	"tinvest/internal/render"
-	"tinvest/internal/transport"
+	brokerinstruments "github.com/Dronnn/tinvest/internal/broker/instruments"
+	"github.com/Dronnn/tinvest/internal/render"
+	"github.com/Dronnn/tinvest/internal/transport"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 type instrumentGetData struct {

@@ -5,7 +5,7 @@ linters:
   exclusions:
     generated: strict
     paths:
-      - internal/pb
+      - pb/investapi
 
 issues:
   max-issues-per-linter: 0

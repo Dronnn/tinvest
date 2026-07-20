@@ -6,9 +6,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"tinvest/internal/broker/users"
-	"tinvest/internal/render"
-	"tinvest/internal/transport"
+	"github.com/Dronnn/tinvest/internal/broker/users"
+	"github.com/Dronnn/tinvest/internal/render"
+	"github.com/Dronnn/tinvest/internal/transport"
 )
 
 type userTariffData struct {

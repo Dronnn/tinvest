@@ -6,8 +6,8 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	brokerinstruments "tinvest/internal/broker/instruments"
-	investapi "tinvest/internal/pb/investapi"
+	brokerinstruments "github.com/Dronnn/tinvest/internal/broker/instruments"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 func TestReferenceDataViews(t *testing.T) {

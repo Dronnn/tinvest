@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"tinvest/internal/render"
-	"tinvest/internal/transport"
+	"github.com/Dronnn/tinvest/internal/render"
+	"github.com/Dronnn/tinvest/internal/transport"
 )
 
 func TestParseOptionalTimeRange(t *testing.T) {

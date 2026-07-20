@@ -1,4 +1,4 @@
-module tinvest
+module github.com/Dronnn/tinvest
 
 go 1.26
 

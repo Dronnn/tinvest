@@ -10,14 +10,13 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/proto"
 
-	investapi "tinvest/internal/pb/investapi"
-	streamrunner "tinvest/internal/stream"
-	"tinvest/internal/transport"
+	streamrunner "github.com/Dronnn/tinvest/internal/stream"
+	"github.com/Dronnn/tinvest/internal/transport"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 type chaosMarketDataServer struct {
@@ -321,14 +320,15 @@ func (s *chaosMarketDataServer) GetOrderBook(context.Context, *investapi.GetOrde
 func startChaosServer(t *testing.T, server *chaosMarketDataServer) *grpc.ClientConn {
 	t.Helper()
 	lis := bufconn.Listen(1 << 20)
-	grpcServer := grpc.NewServer()
+	serverOpt, clientCreds := bufTLS(t)
+	grpcServer := grpc.NewServer(serverOpt)
 	investapi.RegisterMarketDataStreamServiceServer(grpcServer, server)
 	investapi.RegisterMarketDataServiceServer(grpcServer, server)
 	go func() { _ = grpcServer.Serve(lis) }()
 	t.Cleanup(grpcServer.Stop)
 
 	conn, err := transport.Dial(context.Background(), transport.Config{
-		Endpoint: "passthrough:///bufnet", Token: "test", Credentials: insecure.NewCredentials(),
+		Endpoint: "passthrough:///bufnet", Token: "test", Credentials: clientCreds,
 	}, grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
 		return lis.DialContext(ctx)
 	}))

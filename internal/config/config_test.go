@@ -346,7 +346,7 @@ func TestNoNetworkDependencies(t *testing.T) {
 	if err != nil {
 		t.Skip("go binary not available")
 	}
-	out, err := exec.Command(goBin, "list", "-deps", "tinvest/internal/config").Output()
+	out, err := exec.Command(goBin, "list", "-deps", "github.com/Dronnn/tinvest/internal/config").Output()
 	if err != nil {
 		t.Fatalf("go list: %v", err)
 	}

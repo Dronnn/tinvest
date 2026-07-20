@@ -23,13 +23,13 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"tinvest/internal/broker/orders"
-	"tinvest/internal/broker/stoporders"
-	"tinvest/internal/config"
-	"tinvest/internal/ledger"
-	investapi "tinvest/internal/pb/investapi"
-	"tinvest/internal/policy"
-	"tinvest/internal/render"
+	"github.com/Dronnn/tinvest/internal/broker/orders"
+	"github.com/Dronnn/tinvest/internal/broker/stoporders"
+	"github.com/Dronnn/tinvest/internal/config"
+	"github.com/Dronnn/tinvest/internal/ledger"
+	"github.com/Dronnn/tinvest/internal/policy"
+	"github.com/Dronnn/tinvest/internal/render"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 type round4InstrumentService struct {

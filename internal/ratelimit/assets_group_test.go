@@ -3,8 +3,8 @@ package ratelimit_test
 import (
 	"testing"
 
-	investapi "tinvest/internal/pb/investapi"
-	"tinvest/internal/ratelimit"
+	"github.com/Dronnn/tinvest/internal/ratelimit"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // TestAssetsEndpointsInInstrumentListsGroup pins the June 2026 published limit:

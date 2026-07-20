@@ -3,7 +3,7 @@ package render
 import (
 	"io"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // PlaceStopResultView is the JSON shape of a placed stop order's outcome.

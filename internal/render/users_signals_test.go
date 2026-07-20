@@ -3,7 +3,7 @@ package render
 import (
 	"testing"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 func TestTariffAndMarginViews(t *testing.T) {

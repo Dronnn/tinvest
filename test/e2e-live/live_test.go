@@ -13,9 +13,10 @@
 // Safety is structural, not incidental (see harness_test.go): the suite can only
 // ever reach the sandbox host or a loopback relay whose upstream is pinned to
 // the sandbox constant. Nothing here can address production. The token reaches
-// the binary only through the process environment and is never logged, echoed,
-// or handled as a string by the relay, which forwards the incoming authorization
-// metadata upstream verbatim.
+// the binary only through the process environment and is never logged or echoed;
+// the relay strips it from the forwarded metadata and re-attaches it as per-RPC
+// credentials on the upstream call, so it never rides in ordinary outgoing
+// metadata (mirroring the production transport).
 package e2elive
 
 import (
@@ -36,7 +37,7 @@ import (
 	"testing"
 	"time"
 
-	"tinvest/internal/config"
+	"github.com/Dronnn/tinvest/internal/config"
 )
 
 // Set once by TestMain and shared by every test in the package.

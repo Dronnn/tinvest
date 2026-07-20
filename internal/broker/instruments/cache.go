@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // DefaultTTL is the cache freshness window (plan §5).
@@ -43,9 +43,15 @@ type cacheFile struct {
 // DefaultCachePath returns the standard cache location
 // ${XDG_CACHE_HOME:-~/.cache}/tinvest/instruments.json. It returns "" if the
 // home directory cannot be resolved.
+//
+// Per the XDG Base Directory spec, XDG_CACHE_HOME must be an absolute path; a
+// relative (or empty) value is invalid and treated as unset, falling back to
+// ~/.cache. Platform-native cache directories (e.g. macOS ~/Library/Caches)
+// are deliberately not used, so the cache location is identical across the CLI
+// and the library on every OS.
 func DefaultCachePath() string {
 	dir := os.Getenv("XDG_CACHE_HOME")
-	if dir == "" {
+	if !filepath.IsAbs(dir) {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return ""

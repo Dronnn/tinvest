@@ -18,8 +18,8 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 
-	"tinvest/internal/ratelimit"
-	"tinvest/internal/transport/retry"
+	"github.com/Dronnn/tinvest/internal/ratelimit"
+	"github.com/Dronnn/tinvest/internal/transport/retry"
 )
 
 // DefaultTimeout is the per-call deadline applied when the caller's context
@@ -90,7 +90,6 @@ func Dial(_ context.Context, cfg Config, extra ...grpc.DialOption) (*grpc.Client
 	}
 	chain := []grpc.UnaryClientInterceptor{
 		deadlineInterceptor(timeout),
-		metadataInterceptor("authorization", "Bearer "+cfg.Token),
 		metadataInterceptor("x-app-name", appName),
 	}
 	retryInterceptor := cfg.Retry
@@ -105,9 +104,14 @@ func Dial(_ context.Context, cfg Config, extra ...grpc.DialOption) (*grpc.Client
 	}
 	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(creds),
+		// The Bearer token rides as per-RPC credentials rather than static
+		// outgoing metadata, so it is applied at the transport layer — below the
+		// point where gRPC's binary logger records the ClientHeader. This keeps
+		// the token out of any binlog sink the host process installs, while it
+		// still reaches the server on every unary and streaming call.
+		grpc.WithPerRPCCredentials(perTokenCreds{token: cfg.Token}),
 		grpc.WithChainUnaryInterceptor(chain...),
 		grpc.WithChainStreamInterceptor(
-			streamMetadataInterceptor("authorization", "Bearer "+cfg.Token),
 			streamMetadataInterceptor("x-app-name", appName),
 		),
 		grpc.WithStatsHandler(phaseStats{}),
@@ -150,6 +154,26 @@ func deadlineInterceptor(d time.Duration) grpc.UnaryClientInterceptor {
 		return invoker(ctx, method, req, reply, cc, opts...)
 	}
 }
+
+// perTokenCreds carries the Bearer token as gRPC per-RPC credentials. Unlike
+// metadata added by an interceptor (which lands in the outgoing context and is
+// therefore captured by the client-side binary log's ClientHeader), per-RPC
+// credential metadata is applied by the transport when it writes the request
+// headers, so the token never reaches a binlog sink.
+//
+// RequireTransportSecurity always reports true: the token is a secret and must
+// never be sent over an unencrypted connection. gRPC enforces this per call, so
+// there is no seam through which the token could ride plaintext; tests dial over
+// TLS to satisfy it honestly.
+type perTokenCreds struct {
+	token string
+}
+
+func (c perTokenCreds) GetRequestMetadata(context.Context, ...string) (map[string]string, error) {
+	return map[string]string{"authorization": "Bearer " + c.token}, nil
+}
+
+func (perTokenCreds) RequireTransportSecurity() bool { return true }
 
 // metadataInterceptor appends a fixed key/value pair to outgoing metadata.
 func metadataInterceptor(key, value string) grpc.UnaryClientInterceptor {

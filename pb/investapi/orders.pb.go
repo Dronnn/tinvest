@@ -3509,8 +3509,8 @@ const file_orders_proto_rawDesc = "" +
 	"\fReplaceOrder\x12:.tinkoff.public.invest.api.contract.v1.ReplaceOrderRequest\x1a8.tinkoff.public.invest.api.contract.v1.PostOrderResponse\x12\x81\x01\n" +
 	"\n" +
 	"GetMaxLots\x128.tinkoff.public.invest.api.contract.v1.GetMaxLotsRequest\x1a9.tinkoff.public.invest.api.contract.v1.GetMaxLotsResponse\x12\x8a\x01\n" +
-	"\rGetOrderPrice\x12;.tinkoff.public.invest.api.contract.v1.GetOrderPriceRequest\x1a<.tinkoff.public.invest.api.contract.v1.GetOrderPriceResponseB\x9e\x02\n" +
-	")com.tinkoff.public.invest.api.contract.v1B\vOrdersProtoP\x01Z'tinvest/internal/pb/investapi;investapi\xa2\x02\x05TPIAC\xaa\x02%Tinkoff.Public.Invest.Api.Contract.V1\xca\x02&Tinkoff\\Public_\\Invest\\Api\\Contract\\V1\xe2\x022Tinkoff\\Public_\\Invest\\Api\\Contract\\V1\\GPBMetadata\xea\x02*Tinkoff::Public::Invest::Api::Contract::V1b\x06proto3"
+	"\rGetOrderPrice\x12;.tinkoff.public.invest.api.contract.v1.GetOrderPriceRequest\x1a<.tinkoff.public.invest.api.contract.v1.GetOrderPriceResponseB\xa7\x02\n" +
+	")com.tinkoff.public.invest.api.contract.v1B\vOrdersProtoP\x01Z0github.com/Dronnn/tinvest/pb/investapi;investapi\xa2\x02\x05TPIAC\xaa\x02%Tinkoff.Public.Invest.Api.Contract.V1\xca\x02&Tinkoff\\Public_\\Invest\\Api\\Contract\\V1\xe2\x022Tinkoff\\Public_\\Invest\\Api\\Contract\\V1\\GPBMetadata\xea\x02*Tinkoff::Public::Invest::Api::Contract::V1b\x06proto3"
 
 var (
 	file_orders_proto_rawDescOnce sync.Once

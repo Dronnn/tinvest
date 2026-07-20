@@ -95,15 +95,19 @@ func (c *CallInfo) RetryAfter() time.Duration {
 	return c.retryAfter
 }
 
-// beginAttempt resets the per-attempt confirmation at the start of each RPC
+// beginAttempt resets the per-attempt observations at the start of each RPC
 // attempt (stats.Begin) so the final classification reflects the LAST attempt,
-// not a high-water mark. `sent` is deliberately NOT reset: if any attempt
-// reached the wire the mutation may have reached the broker, so that fact must
-// survive a later attempt that never sent.
+// not a high-water mark. `confirmed` and `trackingID` are reset: the tracking
+// id must identify the attempt whose outcome is being reported, so a later
+// attempt that receives none must not inherit an earlier attempt's id (empty
+// beats wrong). `sent` is deliberately NOT reset: if any attempt reached the
+// wire the mutation may have reached the broker, so that fact must survive a
+// later attempt that never sent.
 func (c *CallInfo) beginAttempt() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.confirmed = false
+	c.trackingID = ""
 }
 
 func (c *CallInfo) markSent() {

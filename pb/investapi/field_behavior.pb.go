@@ -177,8 +177,8 @@ const file_google_api_field_behavior_proto_rawDesc = "" +
 	"\tIMMUTABLE\x10\x05\x12\x12\n" +
 	"\x0eUNORDERED_LIST\x10\x06\x12\x15\n" +
 	"\x11NON_EMPTY_DEFAULT\x10\a:`\n" +
-	"\x0efield_behavior\x12\x1d.google.protobuf.FieldOptions\x18\x9c\b \x03(\x0e2\x19.google.api.FieldBehaviorR\rfieldBehaviorB\x96\x01\n" +
-	"\x0ecom.google.apiB\x12FieldBehaviorProtoP\x01Z'tinvest/internal/pb/investapi;investapi\xa2\x02\x03GAX\xaa\x02\n" +
+	"\x0efield_behavior\x12\x1d.google.protobuf.FieldOptions\x18\x9c\b \x03(\x0e2\x19.google.api.FieldBehaviorR\rfieldBehaviorB\x9f\x01\n" +
+	"\x0ecom.google.apiB\x12FieldBehaviorProtoP\x01Z0github.com/Dronnn/tinvest/pb/investapi;investapi\xa2\x02\x03GAX\xaa\x02\n" +
 	"Google.Api\xca\x02\n" +
 	"Google\\Api\xe2\x02\x16Google\\Api\\GPBMetadata\xea\x02\vGoogle::Apib\x06proto3"
 

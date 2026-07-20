@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // TestKillSwitchFailsClosedOnStatError is the F11(a) regression: a stat error

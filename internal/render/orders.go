@@ -4,7 +4,7 @@ import (
 	"io"
 	"strconv"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // LotsView reports requested/executed/remaining lots separately (plan §9): a

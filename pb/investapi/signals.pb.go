@@ -813,8 +813,8 @@ const file_signals_proto_rawDesc = "" +
 	"\rSignalService\x12\x8a\x01\n" +
 	"\rGetStrategies\x12;.tinkoff.public.invest.api.contract.v1.GetStrategiesRequest\x1a<.tinkoff.public.invest.api.contract.v1.GetStrategiesResponse\x12\x81\x01\n" +
 	"\n" +
-	"GetSignals\x128.tinkoff.public.invest.api.contract.v1.GetSignalsRequest\x1a9.tinkoff.public.invest.api.contract.v1.GetSignalsResponseB\x9f\x02\n" +
-	")com.tinkoff.public.invest.api.contract.v1B\fSignalsProtoP\x01Z'tinvest/internal/pb/investapi;investapi\xa2\x02\x05TPIAC\xaa\x02%Tinkoff.Public.Invest.Api.Contract.V1\xca\x02&Tinkoff\\Public_\\Invest\\Api\\Contract\\V1\xe2\x022Tinkoff\\Public_\\Invest\\Api\\Contract\\V1\\GPBMetadata\xea\x02*Tinkoff::Public::Invest::Api::Contract::V1b\x06proto3"
+	"GetSignals\x128.tinkoff.public.invest.api.contract.v1.GetSignalsRequest\x1a9.tinkoff.public.invest.api.contract.v1.GetSignalsResponseB\xa8\x02\n" +
+	")com.tinkoff.public.invest.api.contract.v1B\fSignalsProtoP\x01Z0github.com/Dronnn/tinvest/pb/investapi;investapi\xa2\x02\x05TPIAC\xaa\x02%Tinkoff.Public.Invest.Api.Contract.V1\xca\x02&Tinkoff\\Public_\\Invest\\Api\\Contract\\V1\xe2\x022Tinkoff\\Public_\\Invest\\Api\\Contract\\V1\\GPBMetadata\xea\x02*Tinkoff::Public::Invest::Api::Contract::V1b\x06proto3"
 
 var (
 	file_signals_proto_rawDescOnce sync.Once

@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	investapi "tinvest/internal/pb/investapi"
-	"tinvest/internal/render"
-	streamrunner "tinvest/internal/stream"
+	"github.com/Dronnn/tinvest/internal/render"
+	streamrunner "github.com/Dronnn/tinvest/internal/stream"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 func TestStreamValidationFailureIsOneNDJSONEvent(t *testing.T) {

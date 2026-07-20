@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // TestKillAfterSendThenReconcile is the core crash-injection case (plan §9,

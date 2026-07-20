@@ -13,13 +13,12 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 
-	brokerinstruments "tinvest/internal/broker/instruments"
-	brokerusers "tinvest/internal/broker/users"
-	"tinvest/internal/config"
-	"tinvest/internal/ratelimit"
-	"tinvest/internal/render"
-	"tinvest/internal/transport"
-	"tinvest/internal/transport/retry"
+	brokerinstruments "github.com/Dronnn/tinvest/internal/broker/instruments"
+	brokerusers "github.com/Dronnn/tinvest/internal/broker/users"
+	"github.com/Dronnn/tinvest/internal/clientconn"
+	"github.com/Dronnn/tinvest/internal/config"
+	"github.com/Dronnn/tinvest/internal/render"
+	"github.com/Dronnn/tinvest/internal/transport"
 )
 
 // exitError carries a process exit code out of a command whose envelope has
@@ -173,22 +172,17 @@ func (a *app) connect(ctx context.Context, settings config.Settings) (*grpc.Clie
 	if a.connectOverride != nil {
 		return a.connectOverride(ctx, settings)
 	}
-	// The default retry policy is enabled for every connection: reads retry
-	// automatically, mutations only when the call site opts in via
-	// retry.Idempotent (plan §9). Enabling it here is safe because eligibility
-	// is decided per-call, not per-connection.
-	policy := retry.DefaultRetryPolicy()
-	var limiter *ratelimit.Limiter
-	if !settings.NoRateLimit {
-		limiter = ratelimit.New(ratelimit.DefaultLimits(), ratelimit.DefaultMaxWait)
-	}
-	conn, err := transport.Dial(ctx, transport.Config{
-		Endpoint:    settings.Endpoint,
-		Token:       settings.Token,
-		Timeout:     settings.Timeout,
-		CAFile:      settings.CAFile,
-		RetryPolicy: &policy,
-		RateLimiter: limiter,
+	// clientconn installs the shared interceptor stack: the default retry
+	// policy is enabled for every connection (reads retry automatically,
+	// mutations only when the call site opts in via retry.Idempotent, plan §9)
+	// and, unless disabled, the client-side rate limiter. It returns the
+	// limiter so the tariff refresh below can warm it up.
+	conn, limiter, err := clientconn.Dial(ctx, clientconn.Config{
+		Endpoint:         settings.Endpoint,
+		Token:            settings.Token,
+		Timeout:          settings.Timeout,
+		CAFile:           settings.CAFile,
+		DisableRateLimit: settings.NoRateLimit,
 	})
 	if err != nil {
 		return nil, render.UsageError(fmt.Sprintf("invalid endpoint %q: %v", settings.Endpoint, err))

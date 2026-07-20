@@ -75,7 +75,7 @@ jobs:
         run: make proto
 
       # Fails the job if `make proto` produced a diff, proving the checked-in
-      # generated code in internal/pb/investapi is in sync with the vendored
+      # generated code in pb/investapi is in sync with the vendored
       # protos in proto/.
       - name: Verify generated code is in sync
-        run: git diff --exit-code -- internal/pb
+        run: git diff --exit-code -- pb

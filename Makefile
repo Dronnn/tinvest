@@ -46,7 +46,7 @@ vet:
 lint:
 	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
 
-# Regenerate internal/pb/investapi from the vendored protos in proto/.
+# Regenerate pb/investapi from the vendored protos in proto/.
 # Plugin versions are pinned inside buf.gen.yaml; buf itself is pinned above.
 proto:
 	$(BUF) generate
@@ -59,7 +59,7 @@ tidy:
 	go mod tidy
 
 clean:
-	rm -rf internal/pb/investapi
+	rm -rf pb/investapi
 
 # Pinned goreleaser version, matched to .github/workflows/release.yml.
 GORELEASER_VERSION := v2.17.0

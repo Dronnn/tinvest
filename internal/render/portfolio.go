@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strconv"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // PortfolioPositionView is one instrument position in a portfolio snapshot.

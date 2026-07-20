@@ -74,7 +74,7 @@ detail):
 Every Go module linked into the `tinvest` binary, from `go version -m` on a
 release build (direct and transitive). The `mousetrap` module is compiled only
 into Windows builds; it is listed because the Windows release archives contain
-it. Contract stubs under `internal/pb` are generated from the vendored protos in
+it. Contract stubs under `pb/investapi` are generated from the vendored protos in
 `proto/` (see `proto/VERSION.md`), not a linked module.
 
 | Module | Version | License |

@@ -4,7 +4,7 @@ import (
 	"io"
 	"strconv"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // NewsTableView preserves one table embedded in a news item.

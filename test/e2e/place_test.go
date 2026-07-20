@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // TestPlaceHappyPath: a clean placement exits 0, emits a single ok envelope,

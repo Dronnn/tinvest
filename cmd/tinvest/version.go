@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"tinvest/internal/config"
-	"tinvest/internal/render"
+	"github.com/Dronnn/tinvest/internal/config"
+	"github.com/Dronnn/tinvest/internal/render"
 )
 
 // version is overridden at release time via

@@ -4,8 +4,8 @@ import (
 	"io"
 	"strconv"
 
-	brokerinstruments "tinvest/internal/broker/instruments"
-	investapi "tinvest/internal/pb/investapi"
+	brokerinstruments "github.com/Dronnn/tinvest/internal/broker/instruments"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // ListedInstrumentView is the common shape of all per-type list RPCs.

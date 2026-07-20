@@ -17,16 +17,19 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"tinvest/internal/config"
+	"github.com/Dronnn/tinvest/internal/config"
 )
 
 // relay is a transparent, TLS-terminating gRPC forwarding proxy. It serves the
 // CLI over TLS (a runtime-generated leaf the CLI trusts via TINVEST_CA_FILE) and
 // forwards every method to the REAL sandbox over real TLS, copying the incoming
-// metadata — including the Bearer token — upstream verbatim. It never decodes
-// protobuf: a raw passthrough codec moves already-encoded frames both ways, so a
-// single generic handler forwards instrument resolution, tariff refresh, order
-// placement, and reconciliation reads alike.
+// metadata upstream. The one exception is the Bearer token: it is stripped from
+// the forwarded metadata and re-attached as per-RPC credentials on the upstream
+// call (see director), so — like the production transport — the token never
+// rides in ordinary outgoing metadata. The relay never decodes protobuf: a raw
+// passthrough codec moves already-encoded frames both ways, so a single generic
+// handler forwards instrument resolution, tariff refresh, order placement, and
+// reconciliation reads alike.
 //
 // The one non-transparent behavior is an optional hook on PostOrder: the hook
 // fires the instant the broker's response reaches the relay (the order is by
@@ -42,6 +45,17 @@ type relay struct {
 	mu          sync.Mutex
 	onPostOrder func() // fired once per PostOrder passthrough when set
 }
+
+// bearerCreds re-attaches the CLI's Bearer token to the upstream call as
+// per-RPC credentials rather than ordinary metadata. RequireTransportSecurity
+// reports true — the token is a secret and the upstream leg is real TLS.
+type bearerCreds struct{ value string }
+
+func (c bearerCreds) GetRequestMetadata(context.Context, ...string) (map[string]string, error) {
+	return map[string]string{"authorization": c.value}, nil
+}
+
+func (bearerCreds) RequireTransportSecurity() bool { return true }
 
 // rawFrame is an opaque gRPC message: the already-encoded protobuf bytes.
 type rawFrame struct{ payload []byte }
@@ -138,14 +152,25 @@ func (r *relay) director(_ any, serverStream grpc.ServerStream) error {
 	}
 
 	md, _ := metadata.FromIncomingContext(serverStream.Context())
-	outCtx, cancel := context.WithCancel(metadata.NewOutgoingContext(serverStream.Context(), md.Copy()))
+	// Strip the bearer token from the forwarded metadata and re-attach it as
+	// per-RPC credentials on the upstream call, mirroring the production
+	// transport: the token is applied at the transport layer, below the point
+	// where a gRPC binary logger records the outgoing ClientHeader, so it never
+	// rides in ordinary outgoing metadata.
+	forwarded := md.Copy()
+	callOpts := []grpc.CallOption{grpc.ForceCodec(rawCodec{})}
+	if auth := forwarded.Get("authorization"); len(auth) > 0 {
+		forwarded.Delete("authorization")
+		callOpts = append(callOpts, grpc.PerRPCCredentials(bearerCreds{value: auth[0]}))
+	}
+	outCtx, cancel := context.WithCancel(metadata.NewOutgoingContext(serverStream.Context(), forwarded))
 	defer cancel()
 
 	clientStream, err := r.upstream.NewStream(
 		outCtx,
 		&grpc.StreamDesc{ServerStreams: true, ClientStreams: true},
 		fullMethod,
-		grpc.ForceCodec(rawCodec{}),
+		callOpts...,
 	)
 	if err != nil {
 		return err

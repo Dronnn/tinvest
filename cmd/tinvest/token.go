@@ -7,12 +7,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"tinvest/internal/broker/accounts"
-	"tinvest/internal/broker/users"
-	"tinvest/internal/config"
-	investapi "tinvest/internal/pb/investapi"
-	"tinvest/internal/render"
-	"tinvest/internal/transport"
+	"github.com/Dronnn/tinvest/internal/broker/accounts"
+	"github.com/Dronnn/tinvest/internal/broker/users"
+	"github.com/Dronnn/tinvest/internal/config"
+	"github.com/Dronnn/tinvest/internal/render"
+	"github.com/Dronnn/tinvest/internal/transport"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 type tokenCheckData struct {

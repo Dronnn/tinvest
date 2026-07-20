@@ -15,7 +15,7 @@ import (
 var readMethodPrefixes = []string{"Get", "Find"}
 
 // readMethods is the explicit allowlist of known read RPC full paths whose
-// names don't start with Get/Find (confirmed against internal/pb/investapi,
+// names don't start with Get/Find (confirmed against pb/investapi,
 // contract pinned per docs/plan-tinvest-cli.md §4). Every entry here is a
 // side-effect-free lookup; nothing that creates, cancels, or mutates state.
 var readMethods = map[string]bool{

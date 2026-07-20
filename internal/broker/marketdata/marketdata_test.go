@@ -13,9 +13,9 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
-	investapi "tinvest/internal/pb/investapi"
-	"tinvest/internal/render"
-	"tinvest/internal/transport"
+	"github.com/Dronnn/tinvest/internal/render"
+	"github.com/Dronnn/tinvest/internal/transport"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // fakeMarketData is an in-process MarketDataService capturing what the
@@ -289,6 +289,54 @@ func TestCandleWindowsRespectIntervalCaps(t *testing.T) {
 	}
 	if len(monthly) != 3 || !monthly[0].To.Equal(from.AddDate(10, 0, 0)) || !monthly[1].To.Equal(from.AddDate(20, 0, 0)) {
 		t.Errorf("monthly windows = %+v", monthly)
+	}
+}
+
+// TestCandleWindowsSecondIntervals covers the sub-minute intervals the broker
+// supports (proto/marketdata.proto): 5s and 10s candles span up to 200 minutes
+// per request, 30s candles up to 20 hours. These have no CLI flag spelling but
+// are reachable through the library's Candles(interval) enum argument.
+func TestCandleWindowsSecondIntervals(t *testing.T) {
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// 5s: 500 minutes / 200-minute cap = 3 windows, none longer than the cap.
+	fiveSec, err := CandleWindows(from, from.Add(500*time.Minute), investapi.CandleInterval_CANDLE_INTERVAL_5_SEC)
+	if err != nil {
+		t.Fatalf("5s windows: %v", err)
+	}
+	if len(fiveSec) != 3 {
+		t.Fatalf("5s windows = %d, want 3", len(fiveSec))
+	}
+	for i, w := range fiveSec {
+		if w.To.Sub(w.From) > 200*time.Minute {
+			t.Errorf("5s window %d spans %s, over the 200m cap", i, w.To.Sub(w.From))
+		}
+		if i > 0 && !fiveSec[i-1].To.Equal(w.From) {
+			t.Errorf("5s windows %d and %d are not contiguous", i-1, i)
+		}
+	}
+
+	// 10s shares the 200-minute cap.
+	tenSec, err := CandleWindows(from, from.Add(200*time.Minute), investapi.CandleInterval_CANDLE_INTERVAL_10_SEC)
+	if err != nil {
+		t.Fatalf("10s windows: %v", err)
+	}
+	if len(tenSec) != 1 || !tenSec[0].To.Equal(from.Add(200*time.Minute)) {
+		t.Errorf("10s windows = %+v, want a single 200m window", tenSec)
+	}
+
+	// 30s: 41 hours / 20-hour cap = 3 windows.
+	thirtySec, err := CandleWindows(from, from.Add(41*time.Hour), investapi.CandleInterval_CANDLE_INTERVAL_30_SEC)
+	if err != nil {
+		t.Fatalf("30s windows: %v", err)
+	}
+	if len(thirtySec) != 3 {
+		t.Fatalf("30s windows = %d, want 3", len(thirtySec))
+	}
+	for i, w := range thirtySec {
+		if w.To.Sub(w.From) > 20*time.Hour {
+			t.Errorf("30s window %d spans %s, over the 20h cap", i, w.To.Sub(w.From))
+		}
 	}
 }
 

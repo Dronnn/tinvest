@@ -12,8 +12,8 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	investapi "tinvest/internal/pb/investapi"
-	"tinvest/internal/transport"
+	"github.com/Dronnn/tinvest/internal/transport"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")

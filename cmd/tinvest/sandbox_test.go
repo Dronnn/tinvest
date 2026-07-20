@@ -7,14 +7,13 @@ import (
 	"testing"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
-	brokersandbox "tinvest/internal/broker/sandbox"
-	"tinvest/internal/config"
-	investapi "tinvest/internal/pb/investapi"
-	"tinvest/internal/render"
-	"tinvest/internal/transport"
+	brokersandbox "github.com/Dronnn/tinvest/internal/broker/sandbox"
+	"github.com/Dronnn/tinvest/internal/config"
+	"github.com/Dronnn/tinvest/internal/render"
+	"github.com/Dronnn/tinvest/internal/transport"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // fakeSandbox is an in-process SandboxService scripting the account-management
@@ -44,7 +43,8 @@ func (f *fakeSandbox) SandboxPayIn(_ context.Context, req *investapi.SandboxPayI
 func newSandboxConn(t *testing.T, f *fakeSandbox) *grpc.ClientConn {
 	t.Helper()
 	lis := bufconn.Listen(1 << 20)
-	srv := grpc.NewServer()
+	serverOpt, clientCreds := bufTLS(t)
+	srv := grpc.NewServer(serverOpt)
 	investapi.RegisterSandboxServiceServer(srv, f)
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)
@@ -52,7 +52,7 @@ func newSandboxConn(t *testing.T, f *fakeSandbox) *grpc.ClientConn {
 	conn, err := transport.Dial(context.Background(), transport.Config{
 		Endpoint:    "passthrough:///bufnet",
 		Token:       "test-token",
-		Credentials: insecure.NewCredentials(),
+		Credentials: clientCreds,
 	}, grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
 		return lis.DialContext(ctx)
 	}))

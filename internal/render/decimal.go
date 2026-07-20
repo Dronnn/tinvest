@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // Decimal is the JSON form of MoneyValue/Quotation (plan §7): the raw

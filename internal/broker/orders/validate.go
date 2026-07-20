@@ -3,8 +3,8 @@ package orders
 import (
 	"fmt"
 
-	investapi "tinvest/internal/pb/investapi"
-	"tinvest/internal/render"
+	"github.com/Dronnn/tinvest/internal/render"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // decimal renders a Quotation as an exact decimal string for error messages.

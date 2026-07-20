@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // TestResearchMethodsShareOrdinaryInstrumentReadsBucket pins both sides of the

@@ -1,6 +1,6 @@
 package render
 
-import investapi "tinvest/internal/pb/investapi"
+import investapi "github.com/Dronnn/tinvest/pb/investapi"
 
 // SandboxAccountView is the JSON shape of a sandbox open/close result: just
 // the account id, since neither RPC returns richer state.

@@ -14218,8 +14218,8 @@ const file_instruments_proto_rawDesc = "" +
 	"\x0fGetInsiderDeals\x12=.tinkoff.public.invest.api.contract.v1.GetInsiderDealsRequest\x1a>.tinkoff.public.invest.api.contract.v1.GetInsiderDealsResponse\x12\x8b\x01\n" +
 	"\x10StructuredNoteBy\x128.tinkoff.public.invest.api.contract.v1.InstrumentRequest\x1a=.tinkoff.public.invest.api.contract.v1.StructuredNoteResponse\x12\x8c\x01\n" +
 	"\x0fStructuredNotes\x129.tinkoff.public.invest.api.contract.v1.InstrumentsRequest\x1a>.tinkoff.public.invest.api.contract.v1.StructuredNotesResponse\x12o\n" +
-	"\x04News\x122.tinkoff.public.invest.api.contract.v1.NewsRequest\x1a3.tinkoff.public.invest.api.contract.v1.NewsResponseB\xa3\x02\n" +
-	")com.tinkoff.public.invest.api.contract.v1B\x10InstrumentsProtoP\x01Z'tinvest/internal/pb/investapi;investapi\xa2\x02\x05TPIAC\xaa\x02%Tinkoff.Public.Invest.Api.Contract.V1\xca\x02&Tinkoff\\Public_\\Invest\\Api\\Contract\\V1\xe2\x022Tinkoff\\Public_\\Invest\\Api\\Contract\\V1\\GPBMetadata\xea\x02*Tinkoff::Public::Invest::Api::Contract::V1b\x06proto3"
+	"\x04News\x122.tinkoff.public.invest.api.contract.v1.NewsRequest\x1a3.tinkoff.public.invest.api.contract.v1.NewsResponseB\xac\x02\n" +
+	")com.tinkoff.public.invest.api.contract.v1B\x10InstrumentsProtoP\x01Z0github.com/Dronnn/tinvest/pb/investapi;investapi\xa2\x02\x05TPIAC\xaa\x02%Tinkoff.Public.Invest.Api.Contract.V1\xca\x02&Tinkoff\\Public_\\Invest\\Api\\Contract\\V1\xe2\x022Tinkoff\\Public_\\Invest\\Api\\Contract\\V1\\GPBMetadata\xea\x02*Tinkoff::Public::Invest::Api::Contract::V1b\x06proto3"
 
 var (
 	file_instruments_proto_rawDescOnce sync.Once

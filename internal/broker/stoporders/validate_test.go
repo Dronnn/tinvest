@@ -3,7 +3,7 @@ package stoporders
 import (
 	"testing"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 func q(units int64, nano int32) *investapi.Quotation {

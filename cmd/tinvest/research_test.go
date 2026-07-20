@@ -14,9 +14,9 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
-	"tinvest/internal/config"
-	investapi "tinvest/internal/pb/investapi"
-	"tinvest/internal/render"
+	"github.com/Dronnn/tinvest/internal/config"
+	"github.com/Dronnn/tinvest/internal/render"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 type fakeResearchCommands struct {

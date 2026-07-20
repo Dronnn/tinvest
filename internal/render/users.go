@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	investapi "tinvest/internal/pb/investapi"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // UnaryLimitView is one group of tariff limits for unary methods.

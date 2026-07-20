@@ -6,10 +6,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	brokerinstruments "tinvest/internal/broker/instruments"
-	"tinvest/internal/broker/marketdata"
-	"tinvest/internal/render"
-	"tinvest/internal/transport"
+	brokerinstruments "github.com/Dronnn/tinvest/internal/broker/instruments"
+	"github.com/Dronnn/tinvest/internal/broker/marketdata"
+	"github.com/Dronnn/tinvest/internal/render"
+	"github.com/Dronnn/tinvest/internal/transport"
 )
 
 type instrumentsListData struct {

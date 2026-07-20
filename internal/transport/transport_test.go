@@ -21,14 +21,13 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
-	investapi "tinvest/internal/pb/investapi"
-	"tinvest/internal/ratelimit"
-	"tinvest/internal/transport/retry"
+	"github.com/Dronnn/tinvest/internal/ratelimit"
+	"github.com/Dronnn/tinvest/internal/transport/retry"
+	investapi "github.com/Dronnn/tinvest/pb/investapi"
 )
 
 // fakeUsers is an in-process UsersService capturing what the client sent.
@@ -73,7 +72,7 @@ func (f *fakeUsers) GetAccounts(ctx context.Context, _ *investapi.GetAccountsReq
 func startServer(t *testing.T, f *fakeUsers) *bufconn.Listener {
 	t.Helper()
 	lis := bufconn.Listen(1 << 20)
-	srv := grpc.NewServer()
+	srv := grpc.NewServer(bufServerOpt)
 	investapi.RegisterUsersServiceServer(srv, f)
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)
@@ -83,7 +82,11 @@ func startServer(t *testing.T, f *fakeUsers) *bufconn.Listener {
 func dialBuf(t *testing.T, lis *bufconn.Listener, cfg Config) *grpc.ClientConn {
 	t.Helper()
 	cfg.Endpoint = "passthrough:///bufnet"
-	cfg.Credentials = insecure.NewCredentials()
+	// TLS over bufconn: the per-RPC token creds require transport security.
+	// A caller that sets its own Credentials keeps them (and its CAFile).
+	if cfg.Credentials == nil {
+		cfg.CAFile = bufCAFile
+	}
 	conn, err := Dial(context.Background(), cfg,
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
 			return lis.DialContext(ctx)
@@ -127,13 +130,13 @@ func TestAuthAndAppNameMetadata(t *testing.T) {
 func TestAuthAndAppNameMetadataOnStreams(t *testing.T) {
 	lis := bufconn.Listen(1 << 20)
 	fake := &fakeMarketStream{metadata: make(chan metadata.MD, 1)}
-	server := grpc.NewServer()
+	server := grpc.NewServer(bufServerOpt)
 	investapi.RegisterMarketDataStreamServiceServer(server, fake)
 	go func() { _ = server.Serve(lis) }()
 	t.Cleanup(server.Stop)
 
 	conn, err := Dial(context.Background(), Config{
-		Endpoint: "passthrough:///bufnet", Token: "stream-token", Credentials: insecure.NewCredentials(),
+		Endpoint: "passthrough:///bufnet", Token: "stream-token", CAFile: bufCAFile,
 	}, grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
 		return lis.DialContext(ctx)
 	}))
@@ -237,8 +240,7 @@ func TestDeadlineAfterSendStaysSentUnconfirmed(t *testing.T) {
 }
 
 func TestDialFailureIsNotSent(t *testing.T) {
-	cfg := Config{Endpoint: "passthrough:///unreachable", Token: "t"}
-	cfg.Credentials = insecure.NewCredentials()
+	cfg := Config{Endpoint: "passthrough:///unreachable", Token: "t", CAFile: bufCAFile}
 	conn, err := Dial(context.Background(), cfg,
 		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
 			return nil, errors.New("no route")
@@ -401,6 +403,35 @@ func TestRetryPolicyBuildsInterceptorAndPreservesCallInfo(t *testing.T) {
 	}
 }
 
+// TestTrackingIDNotStaleWhenFinalAttemptHasNone proves the tracking id is not
+// carried over from an earlier attempt: only the first attempt sets a
+// tracking-id trailer, every attempt fails, and the final CallInfo must report
+// an empty tracking id (empty beats identifying the wrong request).
+func TestTrackingIDNotStaleWhenFinalAttemptHasNone(t *testing.T) {
+	var calls int32
+	fake := &fakeUsers{handler: func(ctx context.Context) (*investapi.GetAccountsResponse, error) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			_ = grpc.SetTrailer(ctx, metadata.Pairs("x-tracking-id", "trk-first-attempt"))
+		}
+		return nil, status.Error(codes.Unavailable, "keep failing")
+	}}
+	lis := startServer(t, fake)
+	policy := retry.DefaultRetryPolicy()
+	conn := dialBuf(t, lis, Config{Token: "t", RetryPolicy: &policy})
+
+	ctx, info := WithCallInfo(context.Background())
+	_, err := investapi.NewUsersServiceClient(conn).GetAccounts(ctx, &investapi.GetAccountsRequest{})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("err = %v, want Unavailable after exhausting retries", err)
+	}
+	if got := atomic.LoadInt32(&calls); got < 2 {
+		t.Fatalf("calls = %d, want the request retried", got)
+	}
+	if info.TrackingID() != "" {
+		t.Errorf("tracking id = %q, want empty (the failing final attempt had none)", info.TrackingID())
+	}
+}
+
 // TestRetryPolicyNilLeavesRetryDisabled documents that RetryPolicy is opt-in:
 // Dial does not retry anything when both Retry and RetryPolicy are nil.
 func TestRetryPolicyNilLeavesRetryDisabled(t *testing.T) {
@@ -439,10 +470,21 @@ type testCA struct {
 // certificate authority.
 func generateTestCA(t *testing.T) testCA {
 	t.Helper()
+	ca, err := buildTestCA()
+	if err != nil {
+		t.Fatalf("build test CA: %v", err)
+	}
+	return ca
+}
 
+// buildTestCA builds a throwaway root CA and a server certificate signed by it,
+// valid for 127.0.0.1 (real-loopback TLS tests) and the DNS name "bufnet"
+// (TLS-over-bufconn tests). It is the T-free core of generateTestCA so TestMain
+// can build shared TLS material once.
+func buildTestCA() (testCA, error) {
 	rootKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		t.Fatalf("generate root key: %v", err)
+		return testCA{}, err
 	}
 	rootTemplate := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
@@ -455,16 +497,16 @@ func generateTestCA(t *testing.T) testCA {
 	}
 	rootDER, err := x509.CreateCertificate(rand.Reader, rootTemplate, rootTemplate, &rootKey.PublicKey, rootKey)
 	if err != nil {
-		t.Fatalf("create root cert: %v", err)
+		return testCA{}, err
 	}
 	rootCert, err := x509.ParseCertificate(rootDER)
 	if err != nil {
-		t.Fatalf("parse root cert: %v", err)
+		return testCA{}, err
 	}
 
 	serverKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		t.Fatalf("generate server key: %v", err)
+		return testCA{}, err
 	}
 	serverTemplate := &x509.Certificate{
 		SerialNumber: big.NewInt(2),
@@ -473,22 +515,23 @@ func generateTestCA(t *testing.T) testCA {
 		NotAfter:     time.Now().Add(time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{"bufnet"},
 		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
 	}
 	serverDER, err := x509.CreateCertificate(rand.Reader, serverTemplate, rootCert, &serverKey.PublicKey, rootKey)
 	if err != nil {
-		t.Fatalf("create server cert: %v", err)
+		return testCA{}, err
 	}
 	serverKeyDER, err := x509.MarshalECPrivateKey(serverKey)
 	if err != nil {
-		t.Fatalf("marshal server key: %v", err)
+		return testCA{}, err
 	}
 
 	return testCA{
 		rootPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: rootDER}),
 		certPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: serverDER}),
 		keyPEM:  pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: serverKeyDER}),
-	}
+	}, nil
 }
 
 // writeCAFile writes the root CA PEM to a temp file and returns its path.
@@ -612,8 +655,9 @@ func TestCAFileIgnoredWhenCredentialsSet(t *testing.T) {
 	fake := &fakeUsers{}
 	lis := startServer(t, fake)
 	// A garbage CAFile would fail Dial if it were consulted; it must not be,
-	// since Credentials (insecure, set by dialBuf) takes precedence.
-	conn := dialBuf(t, lis, Config{Token: "t", CAFile: "/nonexistent/ca.pem"})
+	// since the explicit Credentials override takes precedence. The override is
+	// real TLS (bufClientCreds), so the per-RPC token creds are satisfied.
+	conn := dialBuf(t, lis, Config{Token: "t", CAFile: "/nonexistent/ca.pem", Credentials: bufClientCreds})
 
 	ctx, _ := WithCallInfo(context.Background())
 	if _, err := investapi.NewUsersServiceClient(conn).GetAccounts(ctx, &investapi.GetAccountsRequest{}); err != nil {

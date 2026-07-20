@@ -1,6 +1,6 @@
 package stoporders
 
-import investapi "tinvest/internal/pb/investapi"
+import investapi "github.com/Dronnn/tinvest/pb/investapi"
 
 // Status is the CLI's stable, machine-facing name for a stop order's status
 // (mirrors internal/broker/orders.Lifecycle's role for regular orders): the
